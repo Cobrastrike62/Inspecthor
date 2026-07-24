@@ -255,12 +255,39 @@ class Engine:
     """Drives fingerprint -> parser -> store for an evidence set.
 
     CONSTRAINT: returns ArtifactResult objects and never prints, so the same
-    ingest powers the REPL, the scriptable CLI, and the tests.
+    ingest serves the CLI, the autonomous analysis, and the tests.
     """
 
     def __init__(self, store, max_files: int = _MAX_FILES) -> None:
         self.store = store
         self.max_files = max_files
+
+    def plan(self, root: Path) -> tuple[list[Path], list[Path]]:
+        """Split evidence into ``(self_dating, needs_context)``.
+
+        Formats that record absolute time go first so the case's timezone, year,
+        and hostname can be derived from them; formats that omit those (classic
+        syslog) are held back for the second pass.
+        """
+        root = Path(root)
+        targets = [root] if root.is_file() else discover(root, self.max_files)
+        first: list[Path] = []
+        second: list[Path] = []
+        for path in targets:
+            if self._needs_context(path):
+                second.append(path)
+            else:
+                first.append(path)
+        return first, second
+
+    def _needs_context(self, path: Path) -> bool:
+        try:
+            with path.open("rb") as handle:
+                header = handle.read(_HEADER_BYTES)
+        except OSError:
+            return False
+        chosen, _unavailable = select_parser(path, header, sniff(path).kind)
+        return bool(chosen and getattr(chosen, "needs_time_context", False))
 
     def ingest(
         self,
@@ -270,18 +297,25 @@ class Engine:
         year_hint: int | None = None,
         attack=None,
         detectors: list | None = None,
+        paths: list[Path] | None = None,
+        finalize: bool = True,
     ) -> Iterator[ArtifactResult]:
-        """Ingest every file under ``root``, yielding one result per artifact."""
-        root = Path(root)
-        targets = [root] if root.is_file() else discover(root, self.max_files)
+        """Ingest evidence, yielding one result per artifact.
 
-        for path in targets:
-            result = self._ingest_one(
+        ``paths`` restricts the run to a specific set, which is how the two-pass
+        flow works: pass the self-dating files, derive context, then pass the rest.
+        """
+        root = Path(root)
+        if paths is None:
+            paths = [root] if root.is_file() else discover(root, self.max_files)
+
+        for path in paths:
+            yield self._ingest_one(
                 path, root, host, tz, year_hint, attack, detectors or []
             )
-            yield result
 
-        self.store.finalize()
+        if finalize:
+            self.store.finalize()
 
     def _ingest_one(
         self, path: Path, root: Path, host: str, tz, year_hint, attack, detectors: list

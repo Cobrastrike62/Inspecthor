@@ -36,6 +36,12 @@ class Parser:
     requires: str = ""                      # optional-dep import name ("" = pure stdlib)
     install_hint: str = ""                  # one-line hint shown when `requires` is missing
 
+    # True when this format omits the year or the UTC offset, so the parser needs
+    # the case timezone and year worked out first. The engine parses everything
+    # else, derives that context from the evidence, and only then comes back for
+    # these — which is why the tool does not have to ask for --year or --tz.
+    needs_time_context: bool = False
+
     # Confidence returned for each kind of evidence, highest wins in selection.
     CONF_MAGIC = 1.0
     CONF_KIND = 0.9

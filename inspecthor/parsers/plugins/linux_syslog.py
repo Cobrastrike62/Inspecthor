@@ -121,6 +121,10 @@ class LinuxSyslog(Parser):
     )
     requires = ""            # pure stdlib
     install_hint = ""
+    # Classic syslog carries neither year nor UTC offset, so this parser runs in
+    # the second ingest pass, after the engine has derived both from the registry
+    # and from artifacts that do record absolute time.
+    needs_time_context = True
 
     def sniff(self, path: Path, header: bytes, kind: str = "") -> float:
         """Content beats filename here: collected evidence is full of renamed

@@ -196,7 +196,7 @@ def to_csv(rows: Iterable[dict], path: str | Path) -> str:
 
 
 def to_jsonl(rows: Iterable[dict], path: str | Path) -> str:
-    """One JSON object per line — streamable, and what the Matrix export reads."""
+    """One JSON object per line — streamable, and easy to pipe into jq."""
     path = Path(path)
     with path.open("w", encoding="utf-8") as handle:
         for row in rows:

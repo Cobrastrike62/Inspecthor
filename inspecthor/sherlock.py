@@ -73,7 +73,12 @@ class AnswerRule:
 
     label: str
     patterns: tuple[re.Pattern, ...]
-    field: str                                  # data key, or '@ts'/'@user'/'@host'/'@message'
+    # One or more data keys, tried in order, plus the pseudo-keys '@ts', '@user',
+    # '@host' and '@message'. Several keys because the same fact lands under
+    # different names depending on which parser produced it — a command line is
+    # 'cmdline' from EVTX but 'cmd' from sudo, and a rule that knows only one of
+    # them silently answers nothing.
+    field: str | tuple[str, ...]
     formatter: Callable[[Any], str] = fmt_plain
     sources: tuple[str, ...] = ()               # source_artifact prefixes to search
     event_types: tuple[str, ...] = ()           # event_type values to search
@@ -92,7 +97,7 @@ ANSWER_RULES: tuple[AnswerRule, ...] = (
         label="Attacker source IP",
         patterns=(_c(r"attacker'?s? ip"), _c(r"source ip"), _c(r"ip address of the attack"),
                   _c(r"which ip"), _c(r"what ip"), _c(r"originat\w+ ip"), _c(r"remote ip")),
-        field="source_ip", formatter=fmt_plain,
+        field=("source_ip", "ip_address"), formatter=fmt_plain,
         event_types=("logon_failed", "ssh_failed_login", "ssh_invalid_user",
                      "ssh_login_success", "logon_success", "rdp_connection"),
         confidence=0.8, prefer="most_common",
@@ -136,7 +141,8 @@ ANSWER_RULES: tuple[AnswerRule, ...] = (
         label="Executed process / command line",
         patterns=(_c(r"what command"), _c(r"command line"), _c(r"which (?:process|binary|executable)"),
                   _c(r"what (?:process|binary|executable)"), _c(r"was executed"), _c(r"did .* run")),
-        field="cmdline", formatter=fmt_plain,
+        field=("cmdline", "cmd", "script", "process", "image_path"),
+        formatter=fmt_plain,
         event_types=("process_created", "sudo_command", "powershell_scriptblock"),
         confidence=0.65, prefer="first",
     ),
@@ -170,21 +176,23 @@ ANSWER_RULES: tuple[AnswerRule, ...] = (
         label="Malicious file path",
         patterns=(_c(r"(?:file|malware|payload|binary) path"), _c(r"where was .* (?:dropped|written|saved)"),
                   _c(r"full path"), _c(r"dropped file")),
-        field="image_path", formatter=fmt_path,
+        field=("image_path", "target_filename", "program_path", "process", "value"),
+        formatter=fmt_path,
         event_types=("service_installed", "file_created", "amcache_exec"),
         confidence=0.6, prefer="first",
     ),
     AnswerRule(
         label="File hash",
         patterns=(_c(r"\bsha ?256\b"), _c(r"\bsha ?1\b"), _c(r"\bmd5\b"), _c(r"\bhash\b")),
-        field="sha256", formatter=fmt_hash,
+        field=("sha256", "sha1", "md5", "hashes"), formatter=fmt_hash,
         confidence=0.7, prefer="first",
     ),
     AnswerRule(
         label="C2 destination IP",
         patterns=(_c(r"c2|command and control"), _c(r"destination ip"), _c(r"beacon"),
                   _c(r"connect\w* (?:out|to)"), _c(r"exfiltrat\w+ to")),
-        field="destination_ip", formatter=fmt_plain,
+        field=("destination_ip", "destination_hostname", "query_name"),
+        formatter=fmt_plain,
         event_types=("network_connection", "dns_query"),
         confidence=0.75, prefer="most_common",
     ),
@@ -199,7 +207,7 @@ ANSWER_RULES: tuple[AnswerRule, ...] = (
         label="Bytes transferred",
         patterns=(_c(r"how (?:much|many) (?:data|bytes)"), _c(r"bytes (?:sent|transferred|out)"),
                   _c(r"data (?:exfiltrated|transferred)")),
-        field="bytes_sent", formatter=fmt_int,
+        field=("bytes_sent", "bytes", "size"), formatter=fmt_int,
         confidence=0.6, prefer="first",
     ),
     AnswerRule(
@@ -220,7 +228,7 @@ ANSWER_RULES: tuple[AnswerRule, ...] = (
     AnswerRule(
         label="USB device",
         patterns=(_c(r"usb"), _c(r"removable (?:media|device)"), _c(r"external drive")),
-        field="device", formatter=fmt_plain,
+        field=("device", "name", "value"), formatter=fmt_plain,
         event_types=("usb_device",),
         confidence=0.8, prefer="first",
     ),
@@ -228,7 +236,7 @@ ANSWER_RULES: tuple[AnswerRule, ...] = (
         label="Privilege escalation command",
         patterns=(_c(r"privile\w+ escalat"), _c(r"\bsudo\b"), _c(r"become root"),
                   _c(r"elevat\w+")),
-        field="cmd", formatter=fmt_plain,
+        field=("cmd", "cmdline"), formatter=fmt_plain,
         event_types=("sudo_command",),
         confidence=0.7, prefer="first",
     ),
@@ -243,7 +251,7 @@ ANSWER_RULES: tuple[AnswerRule, ...] = (
     AnswerRule(
         label="Detection rule triggered",
         patterns=(_c(r"which (?:rule|signature|detection)"), _c(r"yara"), _c(r"sigma")),
-        field="rule", formatter=fmt_plain,
+        field=("rule",), formatter=fmt_plain,
         event_types=("yara_match", "sigma_match"),
         confidence=0.7, prefer="most_common",
     ),
@@ -295,17 +303,24 @@ def _matching_rules(question: str) -> list[AnswerRule]:
     return [rule for _hits, rule in scored]
 
 
-def _value_for(row: dict, field: str) -> Any:
-    if field == "@ts":
-        return row.get("ts")
-    if field == "@user":
-        return row.get("user")
-    if field == "@host":
-        return row.get("host")
-    if field == "@message":
-        return row.get("message")
+def _value_for(row: dict, field: str | tuple[str, ...]) -> Any:
+    """First non-empty value among the rule's candidate keys."""
+    keys = (field,) if isinstance(field, str) else tuple(field)
     data = row.get("data") or {}
-    return data.get(field) if isinstance(data, dict) else None
+    for key in keys:
+        if key == "@ts":
+            value = row.get("ts")
+        elif key == "@user":
+            value = row.get("user")
+        elif key == "@host":
+            value = row.get("host")
+        elif key == "@message":
+            value = row.get("message")
+        else:
+            value = data.get(key) if isinstance(data, dict) else None
+        if value not in (None, ""):
+            return value
+    return None
 
 
 def _rows_for(store, rule: AnswerRule) -> list[dict]:

@@ -396,24 +396,6 @@ def test_tz_actually_shifts_naive_syslog_times(tmp_path: Path):
     assert central_ts == "2024-03-01 15:15:01"
 
 
-def test_console_ingest_passes_tz_through(tmp_path: Path):
-    """The flag must reach the parser, not just parse successfully."""
-    from inspecthor.console import InspecthorConsole
-    root = tmp_path / "ev"
-    root.mkdir()
-    (root / "auth.log").write_text(
-        "Mar  1 09:15:01 web01 sshd[1]: Failed password for admin from 8.8.8.8 port 1 ssh2\n"
-    )
-    console = InspecthorConsole(str(tmp_path / "tz.db"))
-    try:
-        console.do_ingest(f"{root} --year 2024 --tz America/Chicago")
-        assert timeline(console.store)[0]["ts"] == "2024-03-01 15:15:01"
-        # A bad zone reports and returns rather than raising through the REPL.
-        console.do_ingest(f"{root} --tz Not/AZone")
-    finally:
-        console.store.close()
-
-
 # ---- parsers ----------------------------------------------------------------
 
 
@@ -570,56 +552,11 @@ def test_markdown_report_covers_the_case(case: CaseStore):
     assert "## Artifacts" in text
 
 
-# ---- matrix interop ---------------------------------------------------------
-
-
-def test_matrix_case_matches_matrix_schema(case: CaseStore):
-    from inspecthor.interop.matrix_interop import build_case
-    built = build_case(case, "Test Sherlock")
-    # These keys and this order are what Matrix's case.json carries.
-    for key in ("name", "slug", "type", "category", "difficulty", "platforms",
-                "status", "created", "updated", "tags", "flag", "url",
-                "techniques", "iocs", "timeline", "questions"):
-        assert key in built, f"missing {key}"
-    assert built["slug"] == "test-sherlock"
-    assert built["type"] == "sherlock"
-    assert built["flag"] is None
-    # Matrix's now() format, exactly.
-    datetime.strptime(built["created"], "%Y-%m-%d %H:%M:%S")
-
-
-def test_matrix_targz_layout_is_importable(case: CaseStore, tmp_path: Path):
-    """matrix.py import derives the slug from 'cases/<slug>/...' member paths."""
-    import tarfile
-    from inspecthor.interop.matrix_interop import export_case_targz
-    path, built = export_case_targz(case, "Test Sherlock", tmp_path / "c.tar.gz")
-    with tarfile.open(path) as tar:
-        names = tar.getnames()
-    assert f"cases/{built['slug']}/case.json" in names
-    assert f"cases/{built['slug']}/notes.md" in names
-    assert any(n.startswith("cases/") and "/" in n[6:] for n in names)
-
-
-def test_matrix_ioc_types_are_coerced_to_matrix_vocabulary(case: CaseStore):
-    from inspecthor.ioc import IocSweeper
-    from inspecthor.interop.matrix_interop import build_case
-    IocSweeper(case).sweep()
-    built = build_case(case, "T", include_noise=True)
-    assert built["iocs"]
-    assert all(i["type"] in {"ip", "domain", "url", "hash", "email", "file", "other"}
-               for i in built["iocs"])
-
-
-def test_navigator_layer_shape(case: CaseStore):
-    from inspecthor.interop.matrix_interop import navigator_layer
-    layer = navigator_layer(case, "T", attack_version="19.1")
-    assert layer["domain"] == "enterprise-attack"
-    assert layer["versions"]["attack"] == "19"
-    assert all("techniqueID" in t and "score" in t for t in layer["techniques"])
+# ---- att&ck -----------------------------------------------------------------
 
 
 def test_attack_db_validates_ids():
-    from inspecthor.interop.attack import AttackDB
+    from inspecthor.attack import AttackDB
     db = AttackDB()
     if not db.loaded:
         pytest.skip("no bundled ATT&CK database available")
@@ -760,67 +697,6 @@ def test_yara_detects_a_planted_webshell(tmp_path: Path):
     assert any("Webshell" in str(h.data.get("rule")) for h in hits)
 
 
-def test_detect_runs_yara_in_a_fresh_process(tmp_path: Path):
-    """Regression: detect gated YARA on an in-memory evidence_root.
-
-    A fresh CLI process never has one, so `inspecthor detect` could not run YARA
-    at all — it reported "no evidence root known" and recorded zero YARA findings
-    even though every artifact path was sitting in the database.
-    """
-    pytest.importorskip("yara")
-    from inspecthor.console import InspecthorConsole
-
-    root = tmp_path / "ev"
-    root.mkdir()
-    (root / "shell.php").write_text("<?php system($_GET['cmd']); ?>")
-    db = str(tmp_path / "d.db")
-
-    ingesting = InspecthorConsole(db)
-    try:
-        ingesting.do_ingest(str(root))
-    finally:
-        ingesting.store.close()
-
-    # A brand-new console, exactly like a second CLI invocation.
-    detecting = InspecthorConsole(db)
-    try:
-        assert detecting.evidence_root is None
-        detecting.do_detect("")
-        yara_findings = [f for f in detecting.store.get_findings()
-                         if f.get("engine") == "yara"]
-        assert yara_findings, "detect recorded no YARA findings in a fresh process"
-        assert any("Webshell" in str(f.get("rule")) for f in yara_findings)
-    finally:
-        detecting.store.close()
-
-
-def test_detect_reports_when_the_evidence_is_gone(tmp_path: Path):
-    """A case outlives its evidence; zero detections must be explained."""
-    pytest.importorskip("yara")
-    from inspecthor.console import InspecthorConsole
-
-    root = tmp_path / "ev"
-    root.mkdir()
-    (root / "shell.php").write_text("<?php system($_GET['cmd']); ?>")
-    db = str(tmp_path / "gone.db")
-
-    console = InspecthorConsole(db)
-    try:
-        console.do_ingest(str(root))
-    finally:
-        console.store.close()
-
-    for child in root.iterdir():
-        child.unlink()
-
-    console = InspecthorConsole(db)
-    try:
-        console.do_detect("")     # must not raise, and must not claim a clean scan
-        assert not [f for f in console.store.get_findings() if f.get("engine") == "yara"]
-    finally:
-        console.store.close()
-
-
 # ---- capabilities -----------------------------------------------------------
 
 
@@ -890,16 +766,6 @@ def test_install_hints_name_the_extra():
     assert "[evtx]" in hint
 
 
-def test_console_hint_output_keeps_the_bracketed_extra(tmp_path: Path, capsys):
-    """The extra must survive rendering, not be parsed away as a style tag."""
-    from rich.console import Console as RichConsole
-    from rich.markup import escape
-
-    console = RichConsole(width=200, no_color=True, highlight=False)
-    console.print(f"  [yellow]![/] {escape(capabilities.hint('evtx'))}")
-    assert "[evtx]" in capsys.readouterr().out
-
-
 def test_evidence_text_is_not_parsed_as_markup(capsys):
     """A command line containing brackets must render verbatim in a table.
 
@@ -962,127 +828,13 @@ def test_userassist_rot13_decoding():
     assert _userassist_name("PBZCHGRE") == "COMPUTER"
 
 
-# ---- console ----------------------------------------------------------------
-
-
-def test_console_ingests_and_reports(tmp_path: Path, evidence: Path):
-    from inspecthor.console import InspecthorConsole
-    console = InspecthorConsole(str(tmp_path / "cli.db"), case="smoke")
-    try:
-        console.do_ingest(f"{evidence} --host web01 --year 2024")
-        assert console.store.count_events() > 0
-        # These must not raise on a populated case.
-        console.do_artifacts("")
-        console.do_timeline("--limit 5")
-        console.do_search("admin")
-        console.do_ioc("sweep")
-        console.do_ioc("list")
-        console.do_hosts("")
-        console.do_attck("")
-        console.do_sherlock("--overview")
-        console.do_info("")
-        console.do_parsers("")
-        console.do_tools("")
-        report = tmp_path / "r.md"
-        console.do_report(str(report))
-        assert report.is_file()
-    finally:
-        console.store.close()
-
-
-def test_console_survives_bad_arguments(tmp_path: Path):
-    from inspecthor.console import InspecthorConsole
-    console = InspecthorConsole(str(tmp_path / "cli.db"))
-    try:
-        # A bad flag must return to the prompt, not exit the process.
-        console.do_timeline("--nonsense")
-        console.do_search("--limit")
-        console.do_timeline("--since not-a-date")
-        console.default("bogus command")
-    finally:
-        console.store.close()
-
-
-def test_cli_subcommands_share_the_console_path(tmp_path: Path, evidence: Path):
-    from inspecthor.console import main
-    db = str(tmp_path / "cli2.db")
-    main(["--db", db, "ingest", str(evidence), "--year", "2024"])
-    main(["--db", db, "timeline", "--limit", "3"])
-    main(["--db", db, "search", "admin"])
-    main(["--db", db, "ioc", "sweep"])
-    main(["--db", db, "sherlock", "--overview"])
-    out = tmp_path / "cli.csv"
-    main(["--db", db, "export", "timeline", str(out), "--format", "csv"])
-    assert out.is_file()
+# ---- cli --------------------------------------------------------------------
 
 
 def test_cli_version_flag_exits_cleanly():
-    from inspecthor.console import main
+    from inspecthor.cli import main
     with pytest.raises(SystemExit) as excinfo:
         main(["--version"])
     assert excinfo.value.code == 0
 
 
-def _all_actions(parser, path="inspecthor"):
-    """Every argparse action in a parser and its subparsers, with a readable path."""
-    import argparse as ap
-    for action in parser._actions:
-        if isinstance(action, ap._SubParsersAction):
-            for name, sub in action.choices.items():
-                yield from _all_actions(sub, f"{path} {name}")
-            continue
-        if isinstance(action, (ap._HelpAction, ap._VersionAction)):
-            continue
-        label = "/".join(action.option_strings) or action.dest
-        yield f"{path} :: {label}", action
-
-
-def test_every_cli_argument_documents_itself():
-    """Regression: 37 of 75 arguments once shipped with no help at all.
-
-    An undocumented flag is an unusable flag — the user has to read the source to
-    find out what it does, which is exactly the report that prompted this test.
-    """
-    from inspecthor.console import build_parser
-    undocumented = [
-        label for label, action in _all_actions(build_parser())
-        if not (action.help or "").strip()
-    ]
-    assert not undocumented, f"missing help: {undocumented}"
-
-
-def test_every_runner_argument_documents_itself():
-    import importlib.util
-    from pathlib import Path as _Path
-
-    root = _Path(__file__).resolve().parent.parent / "inspecthor_run.py"
-    spec = importlib.util.spec_from_file_location("inspecthor_run", root)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    undocumented = [
-        label for label, action in _all_actions(module.build_parser(), "inspecthor_run")
-        if not (action.help or "").strip()
-    ]
-    assert not undocumented, f"missing help: {undocumented}"
-
-
-def test_every_subcommand_documents_itself():
-    """Each subcommand needs its own one-liner for the top-level listing."""
-    import argparse as ap
-    from inspecthor.console import build_parser
-    for action in build_parser()._actions:
-        if isinstance(action, ap._SubParsersAction):
-            described = {choice.dest for choice in action._choices_actions if choice.help}
-            missing = set(action.choices) - described
-            assert not missing, f"subcommands missing help: {sorted(missing)}"
-
-
-def test_repl_verbs_have_docstrings():
-    """`help <verb>` in the REPL prints the method docstring — so it must exist."""
-    from inspecthor.console import InspecthorConsole
-    missing = [
-        name[3:] for name in dir(InspecthorConsole)
-        if name.startswith("do_")
-        and not (getattr(InspecthorConsole, name).__doc__ or "").strip()
-    ]
-    assert not missing, f"REPL verbs without help: {missing}"

@@ -201,7 +201,14 @@ class IocSweeper:
         self._iocextract = None
         if use_iocextract is not False:
             try:
-                import iocextract     # optional [ioc] extra
+                # iocextract emits SyntaxWarnings on import under newer Pythons
+                # (unescaped regex literals in its own source). Those are its
+                # problem, not the analyst's, and they would otherwise land in the
+                # middle of a report.
+                import warnings
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", SyntaxWarning)
+                    import iocextract     # optional [ioc] extra
                 self._iocextract = iocextract
             except ImportError:
                 self._iocextract = None

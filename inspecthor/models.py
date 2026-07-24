@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterable, Optional
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from .interop.attack import AttackDB
+    from .attack import AttackDB
 
 # Severity is a closed set; the console colours on it and triage sorts by it.
 SEVERITIES = ("high", "med", "info")
@@ -108,8 +108,9 @@ class ParseContext:
         """Keep only technique IDs that exist in the bundled ATT&CK DB.
 
         CONSTRAINT: never surface or persist an ATT&CK id the DB does not know.
-        A typo or a retired id would poison the Navigator layer and the Matrix
-        export, so it is dropped here rather than at render time.
+        A typo or a retired id would show up in reports and exports as a
+        technique that does not exist, so it is dropped here rather than at
+        render time.
         """
         if not ids:
             return []

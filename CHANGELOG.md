@@ -1,5 +1,60 @@
 # Changelog
 
+## v0.3.0 — one command
+
+Reworked on direct feedback: the tool was a toolkit when it should have done the
+work. Getting value out of a Sherlock took five commands, there were 75 flags to
+learn, the docs read like design notes, and it was coupled to another project.
+
+**One command does everything.**
+
+    inspecthor sherlock.zip
+
+Unpack, route every file to a parser, derive the case context, run YARA and Sigma,
+sweep indicators, find the question file the package shipped with, answer it, write
+the report. No flags. `analyze.py` is the whole orchestration; there is no useful
+state between those steps, so there is no reason to make anyone drive them.
+
+**It works out what it used to ask for.** Classic syslog records no year and no UTC
+offset — but the rest of the evidence usually does. Event logs carry absolute UTC
+timestamps, and the registry records `TimeZoneInformation` and `ComputerName`. So
+ingest runs in two passes: everything that dates itself first, then `infer.py`
+derives timezone, year and host from that, and only then are the ambiguous files
+read. `--year`, `--tz` and `--host` still exist as overrides, and every derived
+value is displayed with its source, because an invisible inference that shifts a
+timeline is worse than a wrong one you can see.
+
+**Four commands, down from 22.** `inspecthor <evidence>`, plus `ask`, `find` and
+`timeline` for following up. The REPL and the other 18 verbs are gone. Follow-up
+commands locate the case file themselves, so `--db` is gone too. A bare path is
+treated as `analyze <path>`. A test asserts the surface stays this size.
+
+**Matrix coupling removed.** No interop module, no `export matrix`, no
+sibling-path ATT&CK lookup, no Navigator layer. The bundled ATT&CK data stays —
+that is MITRE's, and it loads with no configuration.
+
+**Docs rewritten.** README is what to type and what comes back. The architecture,
+the parser contract and the reasoning moved to DESIGN.md.
+
+**Fixed along the way**
+
+- Windows zone names resolved with the wrong sign: `Eastern Standard Time` became
+  UTC+5 instead of UTC-5, a ten-hour error that would have quietly slid a whole
+  Linux timeline. Windows' `ActiveTimeBias` and a real UTC offset have opposite
+  signs and were being conflated.
+- The reported activity window ran to "today" because YARA hits and mtime-anchored
+  events record when the tool ran, not when anything happened. Those are now
+  excluded from both the window and the year anchor.
+- `ask "what command did they run as root?"` returned nothing: the answer rule
+  looked only at `cmdline`, while sudo stores the command in `cmd`. Answer rules
+  now try several field names, since the same fact lands under different keys
+  depending on which parser produced it.
+- `iocextract` emits SyntaxWarnings on import under Python 3.13, which landed in
+  the middle of reports. Suppressed at the import site.
+
+Tests 97 -> 107 (`test_rework.py` covers the autonomous flow). Passes on a bare
+`pip install -e .` with the format-specific tests skipping themselves.
+
 ## v0.2.3 — a real install, and two bugs it exposed
 
 Installing with all extras on Kali surfaced two things that only show up outside
