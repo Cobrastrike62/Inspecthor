@@ -1,0 +1,63 @@
+# Domains that appear in almost every Windows/Linux evidence set and are almost
+# never the answer. Matches are TAGGED 'allowlisted', never dropped — the analyst
+# filters them out in the view, because "Microsoft telemetry" is occasionally
+# exactly what an attacker abused.
+#
+# One entry per line. A leading '.' matches any subdomain.
+microsoft.com
+.microsoft.com
+windows.com
+.windows.com
+windowsupdate.com
+.windowsupdate.com
+msftncsi.com
+.msftncsi.com
+msftconnecttest.com
+.msftconnecttest.com
+office.com
+.office.com
+office365.com
+.office365.com
+live.com
+.live.com
+msn.com
+.msn.com
+bing.com
+.bing.com
+digicert.com
+.digicert.com
+verisign.com
+.verisign.com
+globalsign.com
+.globalsign.com
+symantec.com
+.symantec.com
+entrust.net
+.entrust.net
+sectigo.com
+.sectigo.com
+letsencrypt.org
+.letsencrypt.org
+ubuntu.com
+.ubuntu.com
+debian.org
+.debian.org
+canonical.com
+.canonical.com
+archive.ubuntu.com
+kali.org
+.kali.org
+mozilla.org
+.mozilla.com
+.mozilla.org
+googleapis.com
+.googleapis.com
+gstatic.com
+.gstatic.com
+schemas.microsoft.com
+w3.org
+.w3.org
+example.com
+.example.com
+localhost
+localdomain
