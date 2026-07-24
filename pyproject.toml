@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "inspecthor"
-version = "0.2.2"
+version = "0.2.3"
 description = "Read-only forensic timeline and artifact analysis for blue teams and HTB Sherlocks"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -32,7 +32,16 @@ ntfs = ["dissect.ntfs>=3.0"]
 # SRUM / ESE databases (exfil byte counts).
 ese = ["dissect.esedb>=3.0"]
 # Umbrella: every dissect format lib at once (the Windows backbone).
-windows = ["dissect.target>=3.0"]
+# The format libs are listed explicitly rather than left to dissect.target's
+# dependency graph — it does not pull dissect.esedb, so relying on it made
+# [windows] and [full] quietly narrower than they claim to be.
+windows = [
+    "dissect.target>=3.0",
+    "dissect.eventlog>=3.0",
+    "dissect.regf>=3.0",
+    "dissect.ntfs>=3.0",
+    "dissect.esedb>=3.0",
+]
 # YARA scanning of artifacts and memory.
 yara = ["yara-python>=4.3,<5"]
 # Sigma rules over normalized EVTX events.
@@ -46,8 +55,15 @@ memory = ["volatility3>=2.5,<3"]
 # Richer IOC extraction than the stdlib regexes.
 ioc = ["iocextract>=1.16,<2"]
 # Everything optional at once:           pip install -e '.[full]'
+# CONSTRAINT: full must be the union of every other extra. A test asserts this,
+# because a 'full' install that silently omits one capability is worse than no
+# umbrella extra at all.
 full = [
     "dissect.target>=3.0",
+    "dissect.eventlog>=3.0",
+    "dissect.regf>=3.0",
+    "dissect.ntfs>=3.0",
+    "dissect.esedb>=3.0",
     "yara-python>=4.3,<5",
     "pysigma>=0.11,<2",
     "scapy>=2.5,<3",

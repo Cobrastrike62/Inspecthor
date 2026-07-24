@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.2.3 — a real install, and two bugs it exposed
+
+Installing with all extras on Kali surfaced two things that only show up outside
+a test venv.
+
+- **`[full]` was not full.** It listed `dissect.target` and trusted that to pull
+  the format libraries, but `dissect.target` does not depend on `dissect.esedb`,
+  so `pip install '.[full]'` left the `ese` capability unavailable while claiming
+  to install everything. The dissect format libs are now listed explicitly in both
+  `[windows]` and `[full]`, and a test asserts `[full]` is a superset of every
+  other extra so this cannot recur.
+- **`detect` could never run YARA from the CLI.** The YARA branch was gated on an
+  in-memory `evidence_root`, which only exists after an `ingest` in the *same*
+  process — so a fresh `inspecthor detect` printed "no evidence root known" and
+  recorded zero YARA findings even though every artifact path was in the database.
+  Scan targets now come from the artifacts table, and when recorded paths no
+  longer exist the count is reported rather than passing for a clean scan.
+
+- Added `install.sh`, mirroring reap's: a project-local `.venv` by default or
+  `--pipx` for a global command, with `--full`/`--windows`/`--detect`,
+  `--trusted-host` for TLS-intercepting proxies, and `--link` to put the command
+  on PATH. Debian-family Pythons are PEP-668 managed, so installing into the
+  system interpreter is refused — both modes avoid that.
+
+Verified on Kali WSL (Python 3.13.12): all 9 capabilities available, 97 tests
+passing against the real install, and an end-to-end run where YARA caught a
+planted webshell (T1505.003), Sigma caught the SSH brute force (T1110.001), and
+all four questions in a task file were answered correctly.
+
+Tests 93 -> 97.
+
 ## v0.2.2 — document every flag
 
 Reported: the usage examples showed flags with no explanation of what they were

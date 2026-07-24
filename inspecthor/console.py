@@ -441,14 +441,24 @@ class InspecthorConsole(cmd.Cmd):
         added = 0
 
         yara_ok, yara_hint = YaraScan().available()
-        if yara_ok and self.evidence_root:
+        if yara_ok:
+            # Scan targets come from the artifacts table, not from an in-memory
+            # evidence_root. Gating on the latter meant `inspecthor detect` could
+            # never run YARA from the CLI, because a fresh process has no root
+            # even though every artifact path is recorded in the case.
             rule_dirs = (Path(args.yara_rules),) if args.yara_rules else ()
             scanner = YaraScan(rule_dirs=rule_dirs)
+            scanned = gone = 0
             with self.console.status("[cyan]running YARA…[/]"):
                 for row in self.store.get_artifacts():
                     path = Path(row["path"])
                     if not path.is_file():
+                        # The case outlives the evidence: an extracted folder gets
+                        # cleaned up, or the DB moves to another machine. Say so
+                        # rather than silently reporting zero detections.
+                        gone += 1
                         continue
+                    scanned += 1
                     for event in scanner.scan(path, ctx):
                         self.store.add_events_bulk([event], artifact_id=row["id"])
                         self.store.add_finding(
@@ -457,10 +467,18 @@ class InspecthorConsole(cmd.Cmd):
                             artifact_id=row["id"], attck=event.attck,
                         )
                         added += 1
-        elif not yara_ok:
+            if not scanned:
+                self.console.print(
+                    "[yellow]no artifact files to scan[/] — "
+                    f"{gone} recorded path(s) no longer exist; re-ingest the evidence"
+                )
+            elif gone:
+                self.console.print(
+                    f"[dim]scanned {scanned} artifact(s); {gone} recorded path(s) "
+                    "no longer exist[/]"
+                )
+        else:
             self.console.print(f"[yellow]yara unavailable[/] — {escape(yara_hint)}")
-        elif not self.evidence_root:
-            self.console.print("[yellow]no evidence root known[/] — ingest first for YARA")
 
         sigma = SigmaEval(
             rule_dirs=(Path(args.sigma_rules),) if args.sigma_rules else ()

@@ -760,6 +760,67 @@ def test_yara_detects_a_planted_webshell(tmp_path: Path):
     assert any("Webshell" in str(h.data.get("rule")) for h in hits)
 
 
+def test_detect_runs_yara_in_a_fresh_process(tmp_path: Path):
+    """Regression: detect gated YARA on an in-memory evidence_root.
+
+    A fresh CLI process never has one, so `inspecthor detect` could not run YARA
+    at all — it reported "no evidence root known" and recorded zero YARA findings
+    even though every artifact path was sitting in the database.
+    """
+    pytest.importorskip("yara")
+    from inspecthor.console import InspecthorConsole
+
+    root = tmp_path / "ev"
+    root.mkdir()
+    (root / "shell.php").write_text("<?php system($_GET['cmd']); ?>")
+    db = str(tmp_path / "d.db")
+
+    ingesting = InspecthorConsole(db)
+    try:
+        ingesting.do_ingest(str(root))
+    finally:
+        ingesting.store.close()
+
+    # A brand-new console, exactly like a second CLI invocation.
+    detecting = InspecthorConsole(db)
+    try:
+        assert detecting.evidence_root is None
+        detecting.do_detect("")
+        yara_findings = [f for f in detecting.store.get_findings()
+                         if f.get("engine") == "yara"]
+        assert yara_findings, "detect recorded no YARA findings in a fresh process"
+        assert any("Webshell" in str(f.get("rule")) for f in yara_findings)
+    finally:
+        detecting.store.close()
+
+
+def test_detect_reports_when_the_evidence_is_gone(tmp_path: Path):
+    """A case outlives its evidence; zero detections must be explained."""
+    pytest.importorskip("yara")
+    from inspecthor.console import InspecthorConsole
+
+    root = tmp_path / "ev"
+    root.mkdir()
+    (root / "shell.php").write_text("<?php system($_GET['cmd']); ?>")
+    db = str(tmp_path / "gone.db")
+
+    console = InspecthorConsole(db)
+    try:
+        console.do_ingest(str(root))
+    finally:
+        console.store.close()
+
+    for child in root.iterdir():
+        child.unlink()
+
+    console = InspecthorConsole(db)
+    try:
+        console.do_detect("")     # must not raise, and must not claim a clean scan
+        assert not [f for f in console.store.get_findings() if f.get("engine") == "yara"]
+    finally:
+        console.store.close()
+
+
 # ---- capabilities -----------------------------------------------------------
 
 
@@ -771,6 +832,56 @@ def test_capabilities_always_offer_an_install_route():
 
 def test_unknown_capability_is_not_claimed_available():
     assert not capabilities.available("teleportation")
+
+
+def _extras_from_pyproject() -> dict[str, set[str]]:
+    """{extra: {requirement names}} read from pyproject, versions stripped."""
+    import re as _re
+    import tomllib
+    from pathlib import Path as _Path
+
+    root = _Path(__file__).resolve().parent.parent / "pyproject.toml"
+    data = tomllib.loads(root.read_text(encoding="utf-8"))
+    extras = data["project"]["optional-dependencies"]
+    return {
+        name: {
+            _re.split(r"[<>=!\[;\s]", req, maxsplit=1)[0].strip().lower()
+            for req in reqs
+        }
+        for name, reqs in extras.items()
+    }
+
+
+def test_full_extra_contains_every_other_extra():
+    """Regression: [full] omitted dissect.esedb.
+
+    It listed dissect.target and trusted that to pull the format libs, but
+    dissect.target does not depend on dissect.esedb — so `pip install '.[full]'`
+    left the 'ese' capability unavailable while claiming to install everything.
+    A 'full' install that quietly omits a capability is worse than no umbrella.
+    """
+    extras = _extras_from_pyproject()
+    assert "full" in extras
+    full = extras["full"]
+    missing: dict[str, set[str]] = {}
+    for name, reqs in extras.items():
+        if name == "full":
+            continue
+        gap = reqs - full
+        if gap:
+            missing[name] = gap
+    assert not missing, f"[full] is missing requirements from other extras: {missing}"
+
+
+def test_every_capability_names_a_real_extra():
+    """A capability's install hint must point at an extra that exists."""
+    extras = _extras_from_pyproject()
+    unknown = [
+        (cap.name, cap.extra)
+        for cap in capabilities.CAPABILITIES
+        if cap.extra and cap.extra not in extras
+    ]
+    assert not unknown, f"capabilities naming a nonexistent extra: {unknown}"
 
 
 def test_install_hints_name_the_extra():
