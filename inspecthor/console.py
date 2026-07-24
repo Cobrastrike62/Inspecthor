@@ -59,6 +59,14 @@ _BANNER_ASCII = r"""
 """
 
 
+HELP_YARA_RULES = (
+    "extra directory of .yar rules, searched in addition to the bundled set"
+)
+HELP_SIGMA_RULES = (
+    "extra directory of Sigma .yml rules, searched in addition to the bundled set"
+)
+
+
 def _banner() -> str:
     enc = (getattr(sys.stdout, "encoding", "") or "").lower()
     return _BANNER_UTF8 if "utf" in enc else _BANNER_ASCII
@@ -84,16 +92,28 @@ def _filter_from(args: argparse.Namespace) -> EventFilter:
 def _view_parser(prog: str) -> argparse.ArgumentParser:
     """Flags shared by timeline/search/export."""
     parser = argparse.ArgumentParser(prog=prog, add_help=False)
-    parser.add_argument("--since", help="start time, e.g. '2024-03-01 09:00:00'")
-    parser.add_argument("--until", help="end time")
-    parser.add_argument("--host")
-    parser.add_argument("--user")
-    parser.add_argument("--type", help="event_type, e.g. logon_failed")
-    parser.add_argument("--source", help="source_artifact, e.g. evtx or evtx/Security")
-    parser.add_argument("--severity", choices=("high", "med", "info"))
-    parser.add_argument("--tag")
-    parser.add_argument("--limit", type=int, default=0)
-    parser.add_argument("--desc", action="store_true", help="newest first")
+    parser.add_argument("--since", metavar="TIME",
+                        help="only events at or after this UTC time, e.g. '2024-03-01' "
+                             "or '2024-03-01 09:00:00'")
+    parser.add_argument("--until", metavar="TIME",
+                        help="only events at or before this UTC time")
+    parser.add_argument("--host", metavar="NAME",
+                        help="only events from this host (see 'hosts' for what is present)")
+    parser.add_argument("--user", metavar="NAME",
+                        help="only events for this account (see 'users')")
+    parser.add_argument("--type", metavar="EVENT_TYPE",
+                        help="only this event type, e.g. logon_failed (see 'types')")
+    parser.add_argument("--source", metavar="ARTIFACT",
+                        help="only this source artifact; a bare family matches its "
+                             "channels, so 'evtx' also matches 'evtx/Security'")
+    parser.add_argument("--severity", choices=("high", "med", "info"),
+                        help="only events at this triage level")
+    parser.add_argument("--tag", metavar="TAG",
+                        help="only events carrying this tag, e.g. brute_force_success")
+    parser.add_argument("--limit", type=int, default=0, metavar="N",
+                        help="stop after N events (default 0, meaning no limit)")
+    parser.add_argument("--desc", action="store_true",
+                        help="newest first (default is oldest first)")
     return parser
 
 
@@ -193,16 +213,21 @@ class InspecthorConsole(cmd.Cmd):
                 next to your EVTX events.
         """
         parser = argparse.ArgumentParser(prog="ingest", add_help=False)
-        parser.add_argument("path")
-        parser.add_argument("--host", default="")
+        parser.add_argument("path",
+                            help="evidence folder, a Sherlock .zip, or a single artifact")
+        parser.add_argument("--host", default="", metavar="NAME",
+                            help="hostname to label these events with; most Linux logs "
+                                 "and loose artifacts do not record one")
         parser.add_argument("--year", type=int, default=None,
                             help="year for classic syslog lines, which carry none "
                                  "(default: inferred from the file's mtime)")
         parser.add_argument("--tz", default="UTC",
                             help="timezone to read tz-naive log times in, e.g. "
                                  "America/Chicago or -06:00 (default: UTC)")
-        parser.add_argument("--detect", action="store_true", help="also run YARA rules")
-        parser.add_argument("--yara-rules", default=None)
+        parser.add_argument("--detect", action="store_true",
+                            help="also run YARA over each artifact's bytes while ingesting")
+        parser.add_argument("--yara-rules", default=None, metavar="DIR",
+                            help=HELP_YARA_RULES)
         args = self._args(parser, arg)
         if args is None:
             return
@@ -304,8 +329,10 @@ class InspecthorConsole(cmd.Cmd):
         One query across every artifact at once.
         """
         parser = _view_parser("search")
-        parser.add_argument("text")
-        parser.add_argument("--regex", action="store_true")
+        parser.add_argument("text",
+                            help="text to find in event messages, data fields, and raw records")
+        parser.add_argument("--regex", action="store_true",
+                            help="treat TEXT as a regular expression instead of a literal")
         args = self._args(parser, arg)
         if args is None:
             return
@@ -395,8 +422,10 @@ class InspecthorConsole(cmd.Cmd):
         Run the detection overlay: YARA over artifact bytes, Sigma over events.
         """
         parser = argparse.ArgumentParser(prog="detect", add_help=False)
-        parser.add_argument("--yara-rules", default=None)
-        parser.add_argument("--sigma-rules", default=None)
+        parser.add_argument("--yara-rules", default=None, metavar="DIR",
+                            help=HELP_YARA_RULES)
+        parser.add_argument("--sigma-rules", default=None, metavar="DIR",
+                            help=HELP_SIGMA_RULES)
         args = self._args(parser, arg)
         if args is None:
             return
@@ -585,11 +614,19 @@ class InspecthorConsole(cmd.Cmd):
         'matrix' writes a .tar.gz that `matrix.py import` accepts.
         """
         parser = _view_parser("export")
-        parser.add_argument("what", choices=("timeline", "events", "iocs", "matrix"))
-        parser.add_argument("out", nargs="?", default=None)
+        parser.add_argument("what", choices=("timeline", "events", "iocs", "matrix"),
+                            help="timeline/events for event rows, iocs for indicators, "
+                                 "matrix for a .tar.gz that matrix.py import accepts")
+        parser.add_argument("out", nargs="?", default=None, metavar="FILE",
+                            help="output path (default is derived from WHAT and --format)")
         parser.add_argument("--format", dest="fmt", default="csv",
-                            choices=tuple(reporter.EXPORTERS) )
-        parser.add_argument("--name", default=None, help="case name for the matrix export")
+                            choices=tuple(reporter.EXPORTERS),
+                            help="csv for spreadsheets, jsonl for streaming, l2tcsv for "
+                                 "plaso, timesketch for Timesketch import; ignored when "
+                                 "WHAT is matrix")
+        parser.add_argument("--name", default=None, metavar="NAME",
+                            help="case name recorded in the matrix export (default: the "
+                                 "case name, else the database filename stem)")
         args = self._args(parser, arg)
         if args is None:
             return
@@ -703,52 +740,82 @@ def build_parser() -> argparse.ArgumentParser:
         description="read-only forensic timeline and artifact analysis",
         epilog="run with no subcommand for the interactive console",
     )
-    parser.add_argument("--db", default="inspecthor.db", help="case database")
-    parser.add_argument("--case", default="", help="case name")
+    parser.add_argument("--db", default="inspecthor.db", metavar="FILE",
+                        help="case database to read or create (default inspecthor.db); "
+                             "all derived state lives here, never in the evidence")
+    parser.add_argument("--case", default="", metavar="NAME",
+                        help="case name, recorded in the database and used in reports")
     parser.add_argument("--version", action="version", version=f"inspecthor {__version__}")
     sub = parser.add_subparsers(dest="cmd")
 
     ingest = sub.add_parser("ingest", help="ingest evidence (folder, zip, or file)")
-    ingest.add_argument("path")
-    ingest.add_argument("--host", default="")
+    ingest.add_argument("path",
+                        help="evidence folder, a Sherlock .zip, or a single artifact")
+    ingest.add_argument("--host", default="", metavar="NAME",
+                        help="hostname to label these events with; most Linux logs and "
+                             "loose artifacts do not record one")
     ingest.add_argument("--year", type=int, default=None,
                         help="year for classic syslog lines, which carry none "
                              "(default: inferred from the file's mtime)")
     ingest.add_argument("--tz", default="UTC",
                         help="timezone to read tz-naive log times in, e.g. "
                              "America/Chicago or -06:00 (default: UTC)")
-    ingest.add_argument("--detect", action="store_true")
-    ingest.add_argument("--yara-rules", default=None)
+    ingest.add_argument("--detect", action="store_true",
+                        help="also run YARA over each artifact's bytes while ingesting")
+    ingest.add_argument("--yara-rules", default=None, metavar="DIR",
+                        help=HELP_YARA_RULES)
 
     for name, help_text in (("timeline", "print the super timeline"),
                             ("export", "export events or a matrix case")):
         view = sub.add_parser(name, parents=[_view_parser(name)], help=help_text)
         if name == "export":
-            view.add_argument("what", choices=("timeline", "events", "iocs", "matrix"))
-            view.add_argument("out", nargs="?", default=None)
+            view.add_argument("what", choices=("timeline", "events", "iocs", "matrix"),
+                              help="timeline/events for event rows, iocs for indicators, "
+                                   "matrix for a .tar.gz that matrix.py import accepts")
+            view.add_argument("out", nargs="?", default=None, metavar="FILE",
+                              help="output path (default is derived from WHAT and --format)")
             view.add_argument("--format", dest="fmt", default="csv",
-                              choices=tuple(reporter.EXPORTERS))
-            view.add_argument("--name", default=None)
+                              choices=tuple(reporter.EXPORTERS),
+                              help="csv for spreadsheets, jsonl for streaming, l2tcsv for "
+                                   "plaso, timesketch for Timesketch import; ignored when "
+                                   "WHAT is matrix")
+            view.add_argument("--name", default=None, metavar="NAME",
+                              help="case name recorded in the matrix export")
 
     find = sub.add_parser("search", parents=[_view_parser("search")], help="search all events")
-    find.add_argument("text")
-    find.add_argument("--regex", action="store_true")
+    find.add_argument("text",
+                      help="text to find in event messages, data fields, and raw records")
+    find.add_argument("--regex", action="store_true",
+                      help="treat TEXT as a regular expression instead of a literal")
 
     ioc = sub.add_parser("ioc", help="extract or list indicators")
-    ioc.add_argument("action", nargs="?", default="sweep", choices=("sweep", "list"))
-    ioc.add_argument("--type", default=None)
+    ioc.add_argument("action", nargs="?", default="sweep", choices=("sweep", "list"),
+                     help="sweep extracts indicators from every event and links them to "
+                          "their source; list shows what has been found")
+    ioc.add_argument("--type", default=None, metavar="KIND",
+                     help="list only this kind: ipv4, ipv6, domain, url, email, md5, "
+                          "sha1, sha256")
 
     detect = sub.add_parser("detect", help="run YARA and Sigma")
-    detect.add_argument("--yara-rules", default=None)
-    detect.add_argument("--sigma-rules", default=None)
+    detect.add_argument("--yara-rules", default=None, metavar="DIR",
+                        help=HELP_YARA_RULES)
+    detect.add_argument("--sigma-rules", default=None, metavar="DIR",
+                        help=HELP_SIGMA_RULES)
 
     sherlock = sub.add_parser("sherlock", help="suggest HTB answers")
-    sherlock.add_argument("question", nargs="*", default=[])
-    sherlock.add_argument("--readme", default=None)
-    sherlock.add_argument("--overview", action="store_true")
+    sherlock.add_argument("question", nargs="*", default=[], metavar="WORD",
+                          help="the Sherlock question in its own words, e.g. "
+                               "\"what is the attacker IP\"")
+    sherlock.add_argument("--readme", default=None, metavar="FILE",
+                          help="Sherlock task file to pull numbered questions from and "
+                               "answer in one pass")
+    sherlock.add_argument("--overview", action="store_true",
+                          help="answer the standard opening questions (host, timezone, "
+                               "attacker IP, first logon, persistence) without being asked")
 
     report = sub.add_parser("report", help="write a markdown case report")
-    report.add_argument("out", nargs="?", default=None)
+    report.add_argument("out", nargs="?", default=None, metavar="FILE",
+                        help="write the report here instead of printing it to stdout")
 
     sub.add_parser("artifacts", help="list ingested artifacts")
     sub.add_parser("findings", help="list detections")
@@ -757,8 +824,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("info", help="case summary")
 
     attck = sub.add_parser("attck", help="ATT&CK search / observed techniques / layer")
-    attck.add_argument("query", nargs="*", default=[])
-    attck.add_argument("--layer", default=None)
+    attck.add_argument("query", nargs="*", default=[], metavar="WORD",
+                       help="technique id or keyword to look up; omit to list the "
+                            "techniques observed in this case")
+    attck.add_argument("--layer", default=None, metavar="FILE",
+                       help="write an ATT&CK Navigator layer JSON for the case")
 
     return parser
 

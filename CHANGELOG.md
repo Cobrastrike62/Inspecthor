@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.2.2 — document every flag
+
+Reported: the usage examples showed flags with no explanation of what they were
+for. An audit found the problem was systemic rather than isolated — **37 of the 75
+CLI arguments shipped with no help text at all**, including `path` on `ingest`,
+every filter on `timeline`/`search`/`export` except four, and both rule-directory
+flags. An undocumented flag is an unusable flag: the only way to find out what it
+did was to read the source.
+
+- Help text on all 75 arguments, plus `metavar`s so the usage lines read as
+  English (`--since TIME`, `--limit N`, `--yara-rules DIR`) instead of shouting
+  the dest name.
+- The two rule-directory descriptions are now module constants shared by the REPL
+  and the CLI, so the same flag cannot end up described two different ways.
+- README gained a complete flag reference: global options, `ingest`, the shared
+  filters, and every remaining command flag — with a note on which are worth
+  setting and why (`--host` matters because most Linux logs never record one).
+- Four tests now walk the real parser objects and assert every argument has help,
+  every subcommand has a one-liner, and every REPL verb has a docstring, since
+  `help <verb>` prints it. 54 arguments and 22 verbs are covered, so this cannot
+  quietly regress.
+
+Tests 89 -> 93.
+
 ## v0.2.1 — honour --tz, and explain the time flags
 
 - **`--tz` was accepted and then ignored.** Both entry points hardcoded UTC, so

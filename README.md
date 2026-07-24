@@ -135,6 +135,61 @@ Neither flag affects rsyslog's ISO-8601 lines (`2024-03-01T09:15:01+00:00`), whi
 carry year and offset already, and neither affects EVTX. An unknown timezone is
 rejected rather than quietly falling back to UTC.
 
+### Every flag
+
+`--help` works on every subcommand (`inspecthor export --help`), and `help <verb>`
+works in the REPL. The full reference:
+
+**Global** — apply to any subcommand, and go before it:
+
+| Flag | What it does |
+|---|---|
+| `--db FILE` | Case database to read or create (default `inspecthor.db`). All derived state lives here, never in the evidence. |
+| `--case NAME` | Case name, recorded in the database and used in report headings. |
+| `--version` | Print the version and exit. |
+
+**`ingest <path>`** — `path` is an evidence folder, a Sherlock `.zip`, or one artifact:
+
+| Flag | What it does |
+|---|---|
+| `--host NAME` | Hostname to label these events with. Worth setting: most Linux logs and loose artifacts do not record one, and without it multi-host cases cannot be separated. |
+| `--year YYYY` | Year for classic syslog lines, which carry none. Default infers from the file's mtime — see above for why that misleads on repackaged evidence. |
+| `--tz ZONE` | Timezone to read tz-naive log times in (IANA name, `UTC`, or `-06:00`). Default `UTC`. |
+| `--detect` | Also run YARA over each artifact's bytes while ingesting, instead of a separate `detect` pass. |
+| `--yara-rules DIR` | Extra directory of `.yar` rules, searched in addition to the bundled set. |
+
+**Filters** — shared by `timeline`, `search`, and `export`. All combine with AND:
+
+| Flag | What it does |
+|---|---|
+| `--since TIME` / `--until TIME` | Bound the window, UTC. Accepts `2024-03-01` or `2024-03-01 09:00:00`. |
+| `--host NAME` / `--user NAME` | Restrict to one host or account. Run `hosts` / `users` to see what is present. |
+| `--type EVENT_TYPE` | One event type, e.g. `logon_failed`, `service_installed`. Run `types` for the list. |
+| `--source ARTIFACT` | One source artifact. A bare family matches its channels, so `evtx` also matches `evtx/Security`. |
+| `--severity high\|med\|info` | One triage level. `--severity high` is the fastest way into a case. |
+| `--tag TAG` | Events carrying a tag, e.g. `brute_force_success`, `rdp`, `detection`. |
+| `--limit N` | Stop after N events (default `0`, no limit). |
+| `--desc` | Newest first; default is oldest first. |
+
+**Everything else:**
+
+| Command and flag | What it does |
+|---|---|
+| `search <text> --regex` | Treat the text as a regular expression instead of a literal. |
+| `ioc sweep` / `ioc list` | `sweep` extracts indicators from every event and links them to their source; `list` shows what was found. |
+| `ioc --type KIND` | List one kind only: `ipv4`, `ipv6`, `domain`, `url`, `email`, `md5`, `sha1`, `sha256`. |
+| `detect --yara-rules DIR` | Extra `.yar` directory, in addition to the bundled rules. |
+| `detect --sigma-rules DIR` | Extra Sigma `.yml` directory, in addition to the bundled rules. |
+| `export <what>` | `timeline`/`events` for event rows, `iocs` for indicators, `matrix` for a `.tar.gz` that `matrix.py import` accepts. |
+| `export --format F` | `csv` for spreadsheets, `jsonl` for streaming, `l2tcsv` for plaso, `timesketch` for Timesketch. Ignored when exporting `matrix`. |
+| `export --name NAME` | Case name recorded inside the Matrix export. |
+| `sherlock <question>` | The question in its own words. |
+| `sherlock --readme FILE` | Pull the numbered questions out of a Sherlock task file and answer them in one pass. |
+| `sherlock --overview` | Answer the standard opening questions (host, timezone, attacker IP, first logon, persistence) without being asked. |
+| `attck <query>` | Look up a technique id or keyword. Omit to list the techniques observed in this case. |
+| `attck --layer FILE` | Write an ATT&CK Navigator layer JSON for the case. |
+| `report [FILE]` | Write the markdown report to a file instead of printing it. |
+
 ## How it works
 
 ```

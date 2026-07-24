@@ -45,8 +45,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="timezone to read tz-naive log times in, e.g. "
                              "America/Chicago or -06:00 (default: UTC)")
     parser.add_argument("--detect", action="store_true", help="run YARA and Sigma")
-    parser.add_argument("--yara-rules", default=None)
-    parser.add_argument("--sigma-rules", default=None)
+    parser.add_argument("--yara-rules", default=None, metavar="DIR",
+                        help="extra directory of .yar rules, searched in addition to the bundled set")
+    parser.add_argument("--sigma-rules", default=None, metavar="DIR",
+                        help="extra directory of Sigma .yml rules, searched in addition to the bundled set")
     parser.add_argument("--readme", default=None,
                         help="Sherlock task file to answer questions from")
     parser.add_argument("--matrix", action="store_true",

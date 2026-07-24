@@ -910,3 +910,68 @@ def test_cli_version_flag_exits_cleanly():
     with pytest.raises(SystemExit) as excinfo:
         main(["--version"])
     assert excinfo.value.code == 0
+
+
+def _all_actions(parser, path="inspecthor"):
+    """Every argparse action in a parser and its subparsers, with a readable path."""
+    import argparse as ap
+    for action in parser._actions:
+        if isinstance(action, ap._SubParsersAction):
+            for name, sub in action.choices.items():
+                yield from _all_actions(sub, f"{path} {name}")
+            continue
+        if isinstance(action, (ap._HelpAction, ap._VersionAction)):
+            continue
+        label = "/".join(action.option_strings) or action.dest
+        yield f"{path} :: {label}", action
+
+
+def test_every_cli_argument_documents_itself():
+    """Regression: 37 of 75 arguments once shipped with no help at all.
+
+    An undocumented flag is an unusable flag — the user has to read the source to
+    find out what it does, which is exactly the report that prompted this test.
+    """
+    from inspecthor.console import build_parser
+    undocumented = [
+        label for label, action in _all_actions(build_parser())
+        if not (action.help or "").strip()
+    ]
+    assert not undocumented, f"missing help: {undocumented}"
+
+
+def test_every_runner_argument_documents_itself():
+    import importlib.util
+    from pathlib import Path as _Path
+
+    root = _Path(__file__).resolve().parent.parent / "inspecthor_run.py"
+    spec = importlib.util.spec_from_file_location("inspecthor_run", root)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    undocumented = [
+        label for label, action in _all_actions(module.build_parser(), "inspecthor_run")
+        if not (action.help or "").strip()
+    ]
+    assert not undocumented, f"missing help: {undocumented}"
+
+
+def test_every_subcommand_documents_itself():
+    """Each subcommand needs its own one-liner for the top-level listing."""
+    import argparse as ap
+    from inspecthor.console import build_parser
+    for action in build_parser()._actions:
+        if isinstance(action, ap._SubParsersAction):
+            described = {choice.dest for choice in action._choices_actions if choice.help}
+            missing = set(action.choices) - described
+            assert not missing, f"subcommands missing help: {sorted(missing)}"
+
+
+def test_repl_verbs_have_docstrings():
+    """`help <verb>` in the REPL prints the method docstring — so it must exist."""
+    from inspecthor.console import InspecthorConsole
+    missing = [
+        name[3:] for name in dir(InspecthorConsole)
+        if name.startswith("do_")
+        and not (getattr(InspecthorConsole, name).__doc__ or "").strip()
+    ]
+    assert not missing, f"REPL verbs without help: {missing}"
