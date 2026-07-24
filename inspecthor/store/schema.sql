@@ -1,0 +1,8 @@
+-- inspecthor case store. One SQLite DB per case.
+--
+-- CONSTRAINT: events.ts is ALWAYS UTC ISO8601, zero-padded, so a lexical sort
+-- equals a chronological sort; ts_epoch (microseconds) carries sub-second
+-- precision and is the primary sort key together with id.
+--
+-- The DDL lands in build step 2 (CaseStore). This file is package-data and is
+-- loaded via importlib.resources at store init.

@@ -1,0 +1,42 @@
+# venvs / build
+.venv/
+build/
+dist/
+*.egg-info/
+__pycache__/
+*.py[cod]
+
+# evidence + case data (may contain live malware — NEVER commit)
+# Sherlock packages are password-protected archives of real intrusion artifacts.
+evidence/
+cases/
+*.db
+*.db-wal
+*.db-shm
+*.evtx
+*.pf
+*.hve
+*.pcap
+*.pcapng
+*.dmp
+*.raw
+*.E01
+NTUSER.DAT
+UsrClass.dat
+
+# portable exports / generated reports
+*.tar.gz
+*.zip
+inspecthor-report.md
+inspecthor-report.json
+timeline.csv
+timeline.jsonl
+
+# user-supplied detection rules (bundled rules under inspecthor/data/ ARE tracked)
+rules-local/
+
+# editor / os
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

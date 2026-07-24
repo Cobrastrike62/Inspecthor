@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "inspecthor"
+version = "0.1.0"
+description = "Read-only forensic timeline and artifact analysis for blue teams and HTB Sherlocks"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Cobrastrike62" }]
+keywords = ["dfir", "forensics", "timeline", "blueteam", "hackthebox", "sherlock"]
+# Core stays stdlib + rich: a bare install must always ingest text/syslog/sqlite/
+# cloud-json evidence. Every binary-artifact parser is an extra that degrades to a
+# one-line install hint when absent (the CONSTRAINT).
+dependencies = [
+    "rich>=13.4,<14",
+]
+
+[project.urls]
+Homepage = "https://github.com/Cobrastrike62/inspecthor"
+Repository = "https://github.com/Cobrastrike62/inspecthor"
+
+[project.optional-dependencies]
+# Windows Event Logs (.evtx).            install:  pip install -e '.[evtx]'
+evtx = ["dissect.eventlog>=3.0"]
+# Registry hives + amcache/shimcache.    install:  pip install -e '.[registry]'
+registry = ["dissect.regf>=3.0"]
+# $MFT / $J USN journal.
+ntfs = ["dissect.ntfs>=3.0"]
+# SRUM / ESE databases (exfil byte counts).
+ese = ["dissect.esedb>=3.0"]
+# Umbrella: every dissect format lib at once (the Windows backbone).
+windows = ["dissect.target>=3.0"]
+# YARA scanning of artifacts and memory.
+yara = ["yara-python>=4.3,<5"]
+# Sigma rules over normalized EVTX events.
+sigma = ["pysigma>=0.11,<2"]
+# Both detection engines together:       pip install -e '.[detect]'
+detect = ["yara-python>=4.3,<5", "pysigma>=0.11,<2"]
+# PCAP / PCAPNG (falls back to a tshark binary probe when absent).
+pcap = ["scapy>=2.5,<3"]
+# Memory images.
+memory = ["volatility3>=2.5,<3"]
+# Richer IOC extraction than the stdlib regexes.
+ioc = ["iocextract>=1.16,<2"]
+# Everything optional at once:           pip install -e '.[full]'
+full = [
+    "dissect.target>=3.0",
+    "yara-python>=4.3,<5",
+    "pysigma>=0.11,<2",
+    "scapy>=2.5,<3",
+    "volatility3>=2.5,<3",
+    "iocextract>=1.16,<2",
+]
+
+[project.scripts]
+inspecthor = "inspecthor.console:main"
+
+[tool.setuptools.packages.find]
+include = ["inspecthor*"]
+
+[tool.setuptools.package-data]
+"inspecthor.store" = ["schema.sql"]
+"inspecthor.data" = ["attack/*.json", "yara/*", "sigma/*", "*.txt", "*.yaml"]
