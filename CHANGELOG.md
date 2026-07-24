@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.3.1 — case files no longer collide or accumulate
+
+Reported: "it saves the case as a .db — how does it decide what to name it?
+Worried about overwrites." The worry was justified, and the real failure was worse
+than an overwrite.
+
+- **Re-analyzing the same evidence duplicated everything.** Artifacts were
+  idempotent but events were plain inserts, so a second run took a 3-event case to
+  6 and a third to 9 — silently doubling the event count, the indicators and the
+  timeline. Nothing was overwritten; it accumulated. A run now replaces the
+  previous analysis of the same evidence and says so. The case file holds only
+  derived data, so re-deriving it is safe and is the only correct answer.
+- **Unrelated cases merged into one file.** The name comes from the evidence path,
+  so two Sherlocks that both unpack to a folder called `evidence` shared one
+  `evidence.db` — a single case containing both intrusions, which would answer
+  questions with the wrong data. Sherlock packages are full of folders named
+  `evidence`, `artifacts` and `logs`, so this was likely rather than theoretical.
+  The evidence source is now recorded in the case, a run only reuses a file that
+  belongs to the same evidence, and anything else takes the next free suffix
+  (`evidence-2.db`) with the reason printed.
+- The report and timeline follow the de-conflicted name instead of overwriting a
+  sibling case's outputs.
+- A file that is not one of its own cases — including something that is not even
+  SQLite — is never touched.
+- Added `--name` so the case and its files can be named directly.
+- README now documents what gets written, where, and both collision rules.
+
+Tests 107 -> 112.
+
 ## v0.3.0 — one command
 
 Reworked on direct feedback: the tool was a toolkit when it should have done the

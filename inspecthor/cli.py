@@ -98,6 +98,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         result = analyze_mod.analyze(
             args.evidence,
             out_dir=args.out,
+            case_name=args.name,
             tz=tz,
             host=args.host,
             year=args.year,
@@ -307,6 +308,9 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--out", metavar="DIR", default=None,
                      help="where to write the report, timeline and case file "
                           "(default: here)")
+    run.add_argument("--name", metavar="NAME", default=None,
+                     help="name the case, and the files it writes "
+                          "(default: taken from the evidence path)")
     run.add_argument("--no-detect", action="store_true",
                      help="skip the YARA and Sigma pass")
     run.add_argument("--rules", metavar="DIR", default=None,

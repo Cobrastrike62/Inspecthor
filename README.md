@@ -58,6 +58,33 @@ Saved
 Every suggestion shows the event it came from. Nothing is submitted for you, and
 nothing claims to be certain — `>` means it is confident, `·` means look closer.
 
+## What it writes, and where
+
+Three files, named after the evidence, in your current directory:
+
+```
+sherlock.zip   ->   sherlock.db            the case (everything it parsed)
+                    sherlock-report.md     the writeup
+                    sherlock-timeline.csv  every event, for a spreadsheet
+```
+
+The name comes from the evidence path — a file's stem or a folder's name,
+lowercased. `--out DIR` puts them elsewhere, `--name "Brutus"` names them
+yourself.
+
+**It will not overwrite or merge someone else's case.** Two rules:
+
+- Analyze the **same evidence** again and it replaces that case, rather than
+  adding a second copy of every event to it. It says
+  `replacing the previous analysis in sherlock.db`. The case file holds nothing
+  but derived data, so re-deriving it is always safe.
+- Analyze **different evidence** that happens to produce the same name — two
+  Sherlocks both unpacking to a folder called `evidence`, which is common — and
+  the existing case is left alone. You get `evidence-2.db` and it tells you:
+  `evidence.db already holds a different case; using evidence-2.db`.
+
+A file it does not recognize as one of its own cases is never touched.
+
 ## Then follow up
 
 Three more commands, all working against the case you just analyzed:

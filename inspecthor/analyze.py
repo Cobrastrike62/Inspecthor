@@ -102,6 +102,72 @@ def _default_case_name(source: Path) -> str:
     return re.sub(r"[_\-.]+", " ", stem).strip() or "case"
 
 
+def _slugify(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "case"
+
+
+# Stored in meta so a re-run can tell "this is the same evidence" from
+# "something unrelated happens to share a folder name".
+_META_SOURCE = "evidence_source"
+_MAX_SUFFIX = 50
+
+
+def _existing_source(db_path: Path) -> tuple[bool, str]:
+    """``(is_a_case, recorded_source)`` for a file that already exists."""
+    import sqlite3
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return False, ""
+    try:
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key=?", (_META_SOURCE,)
+        ).fetchone()
+        return True, (row[0] if row and row[0] else "")
+    except sqlite3.Error:
+        # Exists but is not an inspecthor case (or not even SQLite).
+        return False, ""
+    finally:
+        conn.close()
+
+
+def resolve_output_slug(out: Path, name: str, source: Path) -> tuple[str, str]:
+    """Pick a slug whose files will not clobber an unrelated case.
+
+    Returns ``(slug, note)``.
+
+    Three situations, and the important part is that none of them append to an
+    existing case:
+
+    * nothing there — use the name as-is.
+    * a case for THIS evidence — reuse the name; :func:`analyze` starts it fresh.
+      The database is entirely derived from the evidence, so re-deriving it is
+      safe, and it is the only way to avoid silently double-counting every event.
+    * a case for DIFFERENT evidence that happens to share a name — leave it alone
+      and take the next free suffix. Sherlock packages are full of folders called
+      'evidence' and 'artifacts', so this collision is common, and merging two
+      unrelated cases would quietly answer questions with the wrong data.
+    """
+    base = _slugify(name)
+    source_key = str(source.resolve())
+
+    for attempt in range(1, _MAX_SUFFIX + 1):
+        slug = base if attempt == 1 else f"{base}-{attempt}"
+        db_path = out / f"{slug}.db"
+        if not db_path.exists():
+            note = "" if attempt == 1 else (
+                f"{base}.db already holds a different case; using {slug}.db"
+            )
+            return slug, note
+        is_case, recorded = _existing_source(db_path)
+        if is_case and recorded == source_key:
+            return slug, f"replacing the previous analysis in {slug}.db"
+        # Occupied by something else: keep looking.
+    return f"{base}-{_MAX_SUFFIX}", (
+        f"too many cases named {base}; reusing {base}-{_MAX_SUFFIX}.db"
+    )
+
+
 def analyze(
     source: str | Path,
     out_dir: str | Path | None = None,
@@ -120,8 +186,26 @@ def analyze(
     out.mkdir(parents=True, exist_ok=True)
 
     result = Result(case_name=case_name or _default_case_name(source))
-    slug = re.sub(r"[^a-z0-9]+", "-", result.case_name.lower()).strip("-") or "case"
+    slug, name_note = resolve_output_slug(out, result.case_name, source)
     result.db_path = str(out / f"{slug}.db")
+    if name_note:
+        result.warnings.append(name_note)
+
+    # CONSTRAINT: never add to an existing case. Re-running on the same evidence
+    # used to insert every event a second time, silently doubling the counts, the
+    # indicators and the timeline. The database holds nothing but derived data, so
+    # starting clean is both safe and the only correct answer.
+    for stale in (
+        Path(result.db_path),
+        Path(f"{result.db_path}-wal"),
+        Path(f"{result.db_path}-shm"),
+    ):
+        try:
+            stale.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            result.warnings.append(f"could not replace {stale.name}: {exc}")
 
     step("unpacking evidence")
     root, note = open_evidence(source, out / f"{slug}-evidence")
@@ -133,6 +217,10 @@ def analyze(
     result.evidence_root = root
 
     store = CaseStore(result.db_path, case_name=result.case_name)
+    # Recorded so a later run can distinguish "same evidence, analyze again" from
+    # "different evidence that happens to share a folder name".
+    store.set_meta(_META_SOURCE, str(source.resolve()))
+    store.set_meta("evidence_root", str(root))
     attack = AttackDB()
     engine = Engine(store)
 

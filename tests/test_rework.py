@@ -366,3 +366,106 @@ def test_attack_data_is_bundled_not_borrowed():
     db = AttackDB()
     assert db.loaded, "the bundled ATT&CK data should load with no configuration"
     assert db.valid(["T1110.001", "T9999.999"]) == ["T1110.001"]
+
+
+# ---- case files must not collide or accumulate -------------------------------
+
+
+def test_reanalysis_replaces_instead_of_duplicating(pkg: Path, tmp_path: Path):
+    """Regression: a second run inserted every event again, doubling the counts."""
+    from inspecthor.analyze import analyze
+
+    out = tmp_path / "out"
+    first = analyze(pkg, out_dir=out, detect=False)
+    second = analyze(pkg, out_dir=out, detect=False)
+
+    assert first.db_path == second.db_path, "same evidence should reuse the name"
+    assert second.event_count == first.event_count, "events were duplicated"
+    assert any("replacing" in w for w in second.warnings), "the replace should be stated"
+
+
+def test_different_evidence_never_lands_in_the_same_case(tmp_path: Path):
+    """Two Sherlocks whose folders are both called 'evidence' must stay apart."""
+    from inspecthor.analyze import analyze
+
+    def make(root: Path, ip: str) -> Path:
+        root.mkdir(parents=True)
+        (root / "auth.log").write_text(
+            f"Mar  1 09:15:01 web01 sshd[1]: Failed password for admin from {ip} port 1 ssh2\n"
+            f"Mar  1 09:15:09 web01 sshd[2]: Accepted password for admin from {ip} port 2 ssh2\n"
+        )
+        (root / "app.log").write_text(DATED_LOG)
+        return root
+
+    a = make(tmp_path / "caseA" / "evidence", "45.33.32.156")
+    b = make(tmp_path / "caseB" / "evidence", "203.0.113.9")
+    out = tmp_path / "out"
+
+    first = analyze(a, out_dir=out, detect=False)
+    second = analyze(b, out_dir=out, detect=False)
+
+    assert first.db_path != second.db_path, "unrelated cases shared a database"
+    assert any("different case" in w for w in second.warnings)
+
+    # And neither database contains the other's indicator.
+    for path, mine, theirs in (
+        (first.db_path, "45.33.32.156", "203.0.113.9"),
+        (second.db_path, "203.0.113.9", "45.33.32.156"),
+    ):
+        store = CaseStore(path)
+        try:
+            values = {row["value"] for row in store.get_iocs()}
+            hits = {r["message"] for r in store.query_events(EventFilter())}
+            blob = " ".join(hits) + " ".join(values)
+            assert mine in blob
+            assert theirs not in blob, f"{Path(path).name} was contaminated"
+        finally:
+            store.close()
+
+
+def test_a_foreign_db_file_is_not_clobbered(tmp_path: Path, pkg: Path):
+    """Something else's evidence.db must survive untouched."""
+    from inspecthor.analyze import analyze
+
+    out = tmp_path / "out"
+    out.mkdir()
+    stranger = out / "pkg.db"
+    stranger.write_bytes(b"not a sqlite database at all")
+
+    result = analyze(pkg, out_dir=out, detect=False)
+    assert Path(result.db_path).name != "pkg.db"
+    assert stranger.read_bytes() == b"not a sqlite database at all"
+
+
+def test_name_flag_controls_the_filenames(pkg: Path, tmp_path: Path):
+    from inspecthor.analyze import analyze
+
+    out = tmp_path / "out"
+    result = analyze(pkg, out_dir=out, case_name="Brutus Sherlock", detect=False)
+    assert Path(result.db_path).name == "brutus-sherlock.db"
+    assert Path(result.report_path).name == "brutus-sherlock-report.md"
+    assert Path(result.timeline_path).name == "brutus-sherlock-timeline.csv"
+
+
+def test_outputs_share_the_deconflicted_name(tmp_path: Path):
+    """The report and timeline must follow the database, not overwrite a sibling."""
+    from inspecthor.analyze import analyze
+
+    out = tmp_path / "out"
+    a = tmp_path / "a" / "evidence"
+    b = tmp_path / "b" / "evidence"
+    for root, ip in ((a, "1.2.3.4"), (b, "5.6.7.8")):
+        root.mkdir(parents=True)
+        (root / "auth.log").write_text(
+            f"Mar  1 09:15:01 web01 sshd[1]: Failed password for admin from {ip} port 1 ssh2\n"
+        )
+        (root / "app.log").write_text(DATED_LOG)
+
+    first = analyze(a, out_dir=out, detect=False)
+    second = analyze(b, out_dir=out, detect=False)
+    assert Path(first.report_path) != Path(second.report_path)
+    assert Path(first.timeline_path) != Path(second.timeline_path)
+    assert all(Path(p).is_file() for p in (
+        first.report_path, first.timeline_path,
+        second.report_path, second.timeline_path,
+    ))
