@@ -23,7 +23,7 @@ from inspecthor.engine import Engine, open_evidence
 from inspecthor.interop.attack import AttackDB
 from inspecthor.interop.matrix_interop import export_case_targz
 from inspecthor.ioc import IocSweeper
-from inspecthor.query import timeline
+from inspecthor.query import parse_tz, timeline
 from inspecthor.sherlock import overview, questions_from_file
 from inspecthor.store.store import CaseStore
 
@@ -38,7 +38,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--db", default=None, help="case database path")
     parser.add_argument("--name", default=None, help="case name")
     parser.add_argument("--host", default="", help="host label for this evidence")
-    parser.add_argument("--year", type=int, default=None, help="year for syslog with none")
+    parser.add_argument("--year", type=int, default=None,
+                        help="year for classic syslog lines, which carry none "
+                             "(default: inferred from the file's mtime)")
+    parser.add_argument("--tz", default="UTC",
+                        help="timezone to read tz-naive log times in, e.g. "
+                             "America/Chicago or -06:00 (default: UTC)")
     parser.add_argument("--detect", action="store_true", help="run YARA and Sigma")
     parser.add_argument("--yara-rules", default=None)
     parser.add_argument("--sigma-rules", default=None)
@@ -65,6 +70,12 @@ def main(argv: list[str] | None = None) -> int:
     if not root.exists():
         return 2
 
+    try:
+        tz = parse_tz(args.tz)
+    except ValueError as exc:
+        print(f"! {exc}", file=sys.stderr)
+        return 2
+
     store = CaseStore(db_path, case_name=name)
     attack = AttackDB()
     print(f"inspecthor {__version__} — case '{name}'")
@@ -85,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
     print("\n-- ingest --")
     parsed = skipped = events = 0
     for result in Engine(store).ingest(
-        root, host=args.host, tz=timezone.utc, year_hint=args.year,
+        root, host=args.host, tz=tz, year_hint=args.year,
         attack=attack, detectors=detectors,
     ):
         events += result.event_count

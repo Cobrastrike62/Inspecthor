@@ -7,7 +7,7 @@ interpolation here would be an injection path from the evidence itself.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone, tzinfo
+from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Any
 
 from .models import EventFilter, to_utc
@@ -44,6 +44,45 @@ def parse_time(text: str, assume: tzinfo = timezone.utc) -> datetime:
     raise ValueError(
         f"unrecognized time {text!r} — try 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM:SS'"
     )
+
+
+def parse_tz(name: str) -> tzinfo:
+    """Resolve a timezone name or fixed offset for tz-naive log lines.
+
+    Accepts an IANA name ('America/Chicago'), 'UTC', or a fixed offset
+    ('+05:00', '-0600').
+
+    Raises ValueError on anything unrecognized rather than falling back to UTC:
+    silently ignoring the timezone the analyst asked for would shift every naive
+    event by the host's real offset while looking like it worked.
+    """
+    raw = (name or "").strip()
+    if not raw or raw.upper() in ("UTC", "Z", "GMT"):
+        return timezone.utc
+
+    match = re.fullmatch(r"([+-])(\d{2}):?(\d{2})", raw)
+    if match:
+        sign = 1 if match.group(1) == "+" else -1
+        offset = timedelta(hours=int(match.group(2)), minutes=int(match.group(3)))
+        if offset > timedelta(hours=24):
+            raise ValueError(f"offset out of range: {name!r}")
+        return timezone(sign * offset)
+
+    try:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+    except ImportError:  # pragma: no cover - Python < 3.9
+        raise ValueError(f"named timezones unavailable on this interpreter: {name!r}") from None
+    try:
+        return ZoneInfo(raw)
+    except ZoneInfoNotFoundError:
+        # On a bare Windows interpreter the IANA database is a separate package;
+        # say so instead of quietly using the wrong offset.
+        raise ValueError(
+            f"unknown timezone {name!r} — use an IANA name like 'America/Chicago', "
+            "'UTC', or an offset like '-06:00' (on Windows you may need: pip install tzdata)"
+        ) from None
+    except (ValueError, OSError):
+        raise ValueError(f"unknown timezone {name!r}") from None
 
 
 def _epoch_us(value: datetime) -> int:

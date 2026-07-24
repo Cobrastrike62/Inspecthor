@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.2.1 — honour --tz, and explain the time flags
+
+- **`--tz` was accepted and then ignored.** Both entry points hardcoded UTC, so
+  `--tz America/Chicago` looked like it worked while every tz-naive syslog line
+  stayed at the wrong hour — worse than not offering the flag, because the result
+  is confidently wrong rather than obviously missing. It is now wired through to
+  the parser and covered by a test that asserts the actual shift.
+- `parse_tz()` accepts IANA names, `UTC`, and fixed offsets (`-06:00`, `+0530`),
+  and **rejects** anything else instead of falling back to UTC.
+- `--year` and `--tz` had no help text on the `ingest` subcommand and no
+  explanation anywhere in the README, despite appearing in the usage examples.
+  Both are now documented, including why the mtime-based year inference is
+  unreliable for repackaged evidence.
+
+Tests 86 -> 89.
+
 ## v0.2.0 — the pipeline
 
 End-to-end: evidence in, timeline and candidate answers out.

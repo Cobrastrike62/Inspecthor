@@ -27,7 +27,7 @@ from .engine import Engine, open_evidence
 from .interop.attack import AttackDB
 from .ioc import IocSweeper
 from .models import EventFilter, ParseContext
-from .query import parse_time, search, timeline
+from .query import parse_time, parse_tz, search, timeline
 from .store.store import CaseStore
 
 # Windows console setup: os.system("") flips on ANSI VT processing for legacy
@@ -178,17 +178,29 @@ class InspecthorConsole(cmd.Cmd):
         )
 
     def do_ingest(self, arg: str) -> None:
-        """ingest <path> [--host H] [--year YYYY] [--tz UTC] [--detect]
+        """ingest <path> [--host H] [--year YYYY] [--tz ZONE] [--detect]
 
         Ingest an evidence folder, a Sherlock .zip (HTB passwords are tried
         automatically), or a single artifact.
+
+        --year  Classic syslog timestamps ("Mar  1 09:15:01") carry no year. Without
+                this, the year is inferred from the log file's mtime — which is wrong
+                whenever the evidence was repackaged or copied after the fact, as
+                Sherlock archives always are. Set it and the guessing stops.
+        --tz    Those same lines carry no UTC offset either. Naive times are read in
+                this zone before being normalized to UTC, so set it to the host's
+                real timezone or the whole Linux timeline sits at the wrong hour
+                next to your EVTX events.
         """
         parser = argparse.ArgumentParser(prog="ingest", add_help=False)
         parser.add_argument("path")
         parser.add_argument("--host", default="")
         parser.add_argument("--year", type=int, default=None,
-                            help="year for syslog lines that carry none")
-        parser.add_argument("--tz", default="UTC", help="assumed tz for naive log times")
+                            help="year for classic syslog lines, which carry none "
+                                 "(default: inferred from the file's mtime)")
+        parser.add_argument("--tz", default="UTC",
+                            help="timezone to read tz-naive log times in, e.g. "
+                                 "America/Chicago or -06:00 (default: UTC)")
         parser.add_argument("--detect", action="store_true", help="also run YARA rules")
         parser.add_argument("--yara-rules", default=None)
         args = self._args(parser, arg)
@@ -206,6 +218,12 @@ class InspecthorConsole(cmd.Cmd):
         self.evidence_root = root
         self.console.print(f"[dim]evidence root:[/] {root}")
 
+        try:
+            tz = parse_tz(getattr(args, "tz", "UTC") or "UTC")
+        except ValueError as exc:
+            self.console.print(f"[red]{exc}[/]")
+            return
+
         detectors = []
         if getattr(args, "detect", False):
             from .detect.base import all_detectors
@@ -222,7 +240,7 @@ class InspecthorConsole(cmd.Cmd):
         results = []
         with self.console.status("[cyan]ingesting…[/]"):
             for result in self.engine.ingest(
-                root, host=args.host, tz=timezone.utc,
+                root, host=args.host, tz=tz,
                 year_hint=args.year, attack=self.attack, detectors=detectors,
             ):
                 results.append(result)
@@ -693,8 +711,12 @@ def build_parser() -> argparse.ArgumentParser:
     ingest = sub.add_parser("ingest", help="ingest evidence (folder, zip, or file)")
     ingest.add_argument("path")
     ingest.add_argument("--host", default="")
-    ingest.add_argument("--year", type=int, default=None)
-    ingest.add_argument("--tz", default="UTC")
+    ingest.add_argument("--year", type=int, default=None,
+                        help="year for classic syslog lines, which carry none "
+                             "(default: inferred from the file's mtime)")
+    ingest.add_argument("--tz", default="UTC",
+                        help="timezone to read tz-naive log times in, e.g. "
+                             "America/Chicago or -06:00 (default: UTC)")
     ingest.add_argument("--detect", action="store_true")
     ingest.add_argument("--yara-rules", default=None)
 

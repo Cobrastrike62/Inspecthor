@@ -356,6 +356,64 @@ def test_parse_time_accepts_common_forms_and_rejects_junk():
         parse_time("last tuesday")
 
 
+def test_parse_tz_handles_names_offsets_and_junk():
+    from inspecthor.query import parse_tz
+    assert parse_tz("UTC") is timezone.utc
+    assert parse_tz("") is timezone.utc
+    assert parse_tz("-06:00").utcoffset(None) == timedelta(hours=-6)
+    assert parse_tz("+0530").utcoffset(None) == timedelta(hours=5, minutes=30)
+    # A bad zone must be refused, never silently downgraded to UTC — that would
+    # shift every naive event while appearing to work.
+    with pytest.raises(ValueError):
+        parse_tz("Mars/Olympus_Mons")
+
+
+def test_tz_actually_shifts_naive_syslog_times(tmp_path: Path):
+    """Regression: --tz was accepted and then ignored, hardcoded to UTC.
+
+    A naive 'Mar  1 09:15:01' read as US Central is 15:15:01 UTC.
+    """
+    from inspecthor.query import parse_tz
+    root = tmp_path / "ev"
+    root.mkdir()
+    (root / "auth.log").write_text(
+        "Mar  1 09:15:01 web01 sshd[1]: Failed password for admin from 8.8.8.8 port 1 ssh2\n"
+    )
+
+    utc_store = CaseStore(str(tmp_path / "utc.db"))
+    list(Engine(utc_store).ingest(root, year_hint=2024, tz=timezone.utc))
+    utc_ts = timeline(utc_store)[0]["ts"]
+    utc_store.close()
+
+    central_store = CaseStore(str(tmp_path / "central.db"))
+    list(Engine(central_store).ingest(
+        root, year_hint=2024, tz=parse_tz("America/Chicago")
+    ))
+    central_ts = timeline(central_store)[0]["ts"]
+    central_store.close()
+
+    assert utc_ts == "2024-03-01 09:15:01"
+    assert central_ts == "2024-03-01 15:15:01"
+
+
+def test_console_ingest_passes_tz_through(tmp_path: Path):
+    """The flag must reach the parser, not just parse successfully."""
+    from inspecthor.console import InspecthorConsole
+    root = tmp_path / "ev"
+    root.mkdir()
+    (root / "auth.log").write_text(
+        "Mar  1 09:15:01 web01 sshd[1]: Failed password for admin from 8.8.8.8 port 1 ssh2\n"
+    )
+    console = InspecthorConsole(str(tmp_path / "tz.db"))
+    try:
+        console.do_ingest(f"{root} --year 2024 --tz America/Chicago")
+        assert timeline(console.store)[0]["ts"] == "2024-03-01 15:15:01"
+        # A bad zone reports and returns rather than raising through the REPL.
+        console.do_ingest(f"{root} --tz Not/AZone")
+    finally:
+        console.store.close()
+
+
 # ---- parsers ----------------------------------------------------------------
 
 

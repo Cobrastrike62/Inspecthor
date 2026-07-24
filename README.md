@@ -99,6 +99,42 @@ scripted and interactive runs cannot drift.
 Sherlock archives are password-protected; `hacktheblue` and `hackthebox` are
 tried automatically so starting a case is one command.
 
+### Two ingest flags that decide whether your timeline is correct
+
+Classic Linux syslog timestamps look like this:
+
+```
+Mar  1 09:15:01 web01 sshd[1010]: Failed password for admin from 45.33.32.156
+^^^^^^^^^^^^^^  month, day, time — no year, no UTC offset
+```
+
+Both missing pieces have to come from somewhere, and getting either wrong puts
+every Linux event in the wrong place next to your Windows events (EVTX stores
+full UTC, so it is never ambiguous).
+
+**`--year 2024`** supplies the year. Without it, the year is inferred from the log
+file's mtime, with a correction for logs that span New Year: a line whose month is
+*later* than the mtime's month must belong to the previous year. That inference is
+usually right for a live host — but mtime lies in exactly the situations you hit
+during a Sherlock, because the archive was repackaged by HTB, the files were copied
+during collection, or you just extracted them. Ingest tells you when it had to
+guess:
+
+```
+! auth.log: syslog lines carry no year; inferred from file mtime
+  (pass a year hint if the evidence was collected later)
+```
+
+**`--tz America/Chicago`** says which timezone to read naive times in before
+normalizing to UTC. Accepts an IANA name, `UTC`, or a fixed offset like `-06:00`.
+Default is UTC. Get the host's real zone from the evidence itself — the registry
+records it, and `inspecthor --db case.db timeline --type system_timezone` will show
+it once a `SYSTEM` hive is ingested.
+
+Neither flag affects rsyslog's ISO-8601 lines (`2024-03-01T09:15:01+00:00`), which
+carry year and offset already, and neither affects EVTX. An unknown timezone is
+rejected rather than quietly falling back to UTC.
+
 ## How it works
 
 ```
