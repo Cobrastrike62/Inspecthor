@@ -1,0 +1,105 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # The install most people will have. Proves the whole pipeline runs on stdlib
+  # plus rich, with the format-specific tests skipping themselves, across every
+  # Python version the package claims to support.
+  bare:
+    name: "bare install · py${{ matrix.python }}"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: install (no extras)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . pytest
+      - name: no optional dependency leaked in
+        run: |
+          ! pip list 2>/dev/null | grep -iE 'dissect|yara|pysigma|scapy|volatility|iocextract'
+      - name: pytest
+        run: pytest -q
+
+  # Every optional parser and detector present, so nothing is skipped.
+  full:
+    name: "all extras · py${{ matrix.python }}"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: install (all extras)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[full]' pytest
+      - name: every capability should be available
+        run: |
+          python - <<'PY'
+          import sys
+          from inspecthor import capabilities
+          missing = [n for n, ok, _u, _h in capabilities.status() if not ok]
+          print("unavailable:", missing or "none")
+          sys.exit(1 if missing else 0)
+          PY
+      - name: pytest
+        run: pytest -q
+
+  # The one command, end to end, on evidence generated in the job.
+  smoke:
+    name: "end-to-end"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[full]'
+      - name: build a tiny evidence set
+        run: |
+          mkdir -p ev
+          cat > ev/auth.log <<'LOG'
+          Mar  1 09:15:01 web01 sshd[1]: Failed password for admin from 45.33.32.156 port 1 ssh2
+          Mar  1 09:15:09 web01 sshd[2]: Accepted password for admin from 45.33.32.156 port 2 ssh2
+          Mar  1 09:17:00 web01 useradd[9]: new user: name=backdoor, UID=0, GID=0
+          LOG
+          printf '2024-03-01T09:22:00+00:00 web01 app: upload received\n' > ev/app.log
+          printf '1) What is the attacker IP address?\n' > ev/readme.txt
+      - name: analyze it
+        run: inspecthor ev --out out
+      - name: it should have inferred the year and answered the question
+        run: |
+          python - <<'PY'
+          import sys
+          from pathlib import Path
+          report = Path("out/ev-report.md").read_text()
+          for expected in ("2024-03-01", "45.33.32.156", "backdoor"):
+              if expected not in report:
+                  print(f"missing from report: {expected}")
+                  sys.exit(1)
+          print("report contains the inferred year and the findings")
+          PY
+      - name: follow-up commands work against the case
+        working-directory: out
+        run: |
+          inspecthor ask "what is the attacker IP?"
+          inspecthor find 45.33.32.156
+          inspecthor timeline

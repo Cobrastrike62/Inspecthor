@@ -713,8 +713,14 @@ def test_unknown_capability_is_not_claimed_available():
 def _extras_from_pyproject() -> dict[str, set[str]]:
     """{extra: {requirement names}} read from pyproject, versions stripped."""
     import re as _re
-    import tomllib
     from pathlib import Path as _Path
+
+    # tomllib is 3.11+; the package supports 3.10, so this test must not be the
+    # thing that breaks it.
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # pragma: no cover - 3.10 only
+        tomllib = pytest.importorskip("tomli", reason="needs tomllib (3.11+) or tomli")
 
     root = _Path(__file__).resolve().parent.parent / "pyproject.toml"
     data = tomllib.loads(root.read_text(encoding="utf-8"))

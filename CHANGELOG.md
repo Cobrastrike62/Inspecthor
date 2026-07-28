@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.3.2 — ready to be public
+
+The repository went public, so: an audit for anything that should not be, plus the
+things a stranger reasonably expects.
+
+- **NOTICE with MITRE attribution.** The bundled ATT&CK data is a derivative of
+  MITRE's STIX dataset, and redistributing it requires attribution. The trademark
+  notice, permission statement and a link to the ATT&CK Terms of Use are now in
+  NOTICE and summarized in the README. NOTICE also lists the licenses the optional
+  extras pull in — several are copyleft, which matters to anyone bundling this into
+  a container or a PyInstaller build.
+- **`install.sh` was committed mode 644**, so `./install.sh` — the command the
+  README gives you — failed on a fresh clone. Now 755.
+- **`requires-python = ">=3.10"` was not true of the test suite**, which imported
+  `tomllib` (3.11+). Guarded, so the claim holds.
+- **CI** (`.github/workflows/tests.yml`): the suite on 3.10 through 3.13 for a bare
+  install, all extras on 3.10 and 3.13, a check that no optional dependency leaks
+  into the bare install, a check that every capability is available with `[full]`,
+  and an end-to-end job that analyzes generated evidence and asserts the report
+  contains the inferred year and the findings. No badge, matching the convention in
+  these repos.
+
+Audited and clean: no credentials, internal hostnames, employer references or
+personal paths anywhere in the history or the tree; every commit authored by the
+GitHub noreply address; nothing generated or private tracked (45 files, 1.7 MB).
+
 ## v0.3.1 — case files no longer collide or accumulate
 
 Reported: "it saves the case as a .db — how does it decide what to name it?

@@ -197,6 +197,19 @@ pytest -q
 Fully offline; every fixture is generated. Passes on a stdlib-only install, with
 the format-specific tests skipping themselves.
 
-## License
+## License and attribution
 
-MIT — see [LICENSE](LICENSE).
+inspecthor is MIT licensed — see [LICENSE](LICENSE).
+
+It bundles a slimmed-down copy of the **MITRE ATT&CK®** Enterprise matrix
+(v19.1) so technique names resolve offline, derived from
+[mitre-attack/attack-stix-data](https://github.com/mitre-attack/attack-stix-data).
+
+> ATT&CK® is a registered trademark of The MITRE Corporation.
+> © 2026 The MITRE Corporation. This work is reproduced and distributed with the
+> permission of The MITRE Corporation. MITRE does not endorse or sponsor this
+> project.
+
+Optional extras install third-party packages under their own licenses, several of
+them copyleft — see [NOTICE](NOTICE) before redistributing a bundle that includes
+them.

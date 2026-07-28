@@ -1,0 +1,55 @@
+inspecthor
+Copyright (c) 2026 Cobrastrike62
+Licensed under the MIT License. See LICENSE.
+
+================================================================================
+Third-party data bundled with this software
+================================================================================
+
+MITRE ATT&CK®
+-------------
+inspecthor/data/attack_enterprise.json is a slimmed-down derivative of the MITRE
+ATT&CK Enterprise matrix (version 19.1), built from the STIX 2.1 dataset published
+at https://github.com/mitre-attack/attack-stix-data. Technique identifiers, names,
+tactics, platforms, descriptions and detection notes are reproduced from that
+dataset; the file is reduced to those fields so the tool can resolve technique
+names offline.
+
+  ATT&CK® and MITRE ATT&CK® are registered trademarks of The MITRE Corporation.
+
+  © 2026 The MITRE Corporation. This work is reproduced and distributed with the
+  permission of The MITRE Corporation.
+
+Used under the MITRE ATT&CK Terms of Use:
+https://attack.mitre.org/resources/legal-and-branding/terms-of-use/
+
+The MITRE Corporation does not endorse, sponsor, or support this project, and is
+not affiliated with it in any way.
+
+================================================================================
+Detection rules
+================================================================================
+
+The YARA rules in inspecthor/data/yara/ and the Sigma rules in
+inspecthor/data/sigma/ were written for this project and are covered by the
+project's MIT license. They are a deliberately small starter set, not a detection
+suite; point the tool at a real ruleset for coverage.
+
+================================================================================
+Optional dependencies
+================================================================================
+
+inspecthor bundles no third-party code. Its optional extras install these
+separately, each under its own license:
+
+  dissect.*      Fox-IT                  Affero GPL v3 / see package
+  yara-python    VirusTotal              Apache License 2.0
+  pySigma        SigmaHQ                 LGPL v2.1
+  scapy          Philippe Biondi et al.  GPL v2
+  volatility3    Volatility Foundation   Volatility Software License 1.0
+  iocextract     InQuest                 GPL v2
+  rich           Will McGugan            MIT
+
+Installing an extra brings that package's license terms with it. If you
+redistribute a bundle that includes them — a PyInstaller build, a container image
+— check those terms first; several are copyleft.
