@@ -9,6 +9,8 @@
 ╚═╝╚═╝  ╚═══╝╚══════╝╚═╝     ╚══════╝ ╚═════╝   ╚═╝   ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝
 ```
 
+[![tests](https://github.com/Cobrastrike62/Inspecthor/actions/workflows/tests.yml/badge.svg)](https://github.com/Cobrastrike62/Inspecthor/actions/workflows/tests.yml)
+
 Point it at forensic evidence. It tells you what happened.
 
 > Only use this on evidence you are authorized to examine. Sherlock packages and

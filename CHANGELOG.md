@@ -19,8 +19,10 @@ things a stranger reasonably expects.
   install, all extras on 3.10 and 3.13, a check that no optional dependency leaks
   into the bare install, a check that every capability is available with `[full]`,
   and an end-to-end job that analyzes generated evidence and asserts the report
-  contains the inferred year and the findings. No badge, matching the convention in
-  these repos.
+  contains the inferred year and the findings. The status badge is in the README —
+  on a public repo it is the fastest way for a reader to see the suite is real.
+  The first run passed on all four Python versions, which is what finally verified
+  the >=3.10 claim empirically rather than by inspection.
 
 Audited and clean: no credentials, internal hostnames, employer references or
 personal paths anywhere in the history or the tree; every commit authored by the
