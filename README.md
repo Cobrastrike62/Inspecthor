@@ -62,13 +62,51 @@ nothing claims to be certain — `>` means it is confident, `·` means look clos
 
 ## What it writes, and where
 
-Three files, named after the evidence, in your current directory:
+Four files, named after the evidence, in your current directory:
 
 ```
-sherlock.zip   ->   sherlock.db            the case (everything it parsed)
+sherlock.zip   ->   sherlock-triage.csv    level >= med — open this one
+                    sherlock-timeline.csv  every event, for grepping
                     sherlock-report.md     the writeup
-                    sherlock-timeline.csv  every event, for a spreadsheet
+                    sherlock.db            the case
 ```
+
+Two timelines on purpose. A tool that quietly omits evidence from a file called
+`timeline.csv` is a liability — you would grep it, find nothing, and conclude the
+activity never happened. But nobody opens 800,000 rows either. On a real KAPE
+collection that split was 31,362 triage rows against 797,969 total.
+
+Each row reads as a sentence rather than a JSON blob:
+
+```
+Timestamp            Level  Title              EventID  Details
+2026-06-04 08:19:16  high   Service installed     7045   Svc: Updater Service ¦ Image: C:/…/updater.exe
+                                                         --system --windows-service ¦ Type: user mode
+                                                         service ¦ Start: auto start ¦ Acct: LocalSystem
+```
+
+Coded values are decoded in place, keeping the raw value: `Type: 10
+(RemoteInteractive)`, `Status: 0xC000006A (bad password)`.
+
+**Where there is no template it shows the raw Windows field names instead** —
+`param1: application-specific ¦ param2: Local Activation`. That difference is the
+point: a curated label means the tool understood the event, a raw Windows name
+means it is only transcribing one. No event ever renders as an empty row or a bare
+noun.
+
+Every run prints how much it actually recognized, per channel:
+
+```
+Coverage — what was recognized
+  channel                                    events   titled
+  Security                                  253,620    93.9%
+  Microsoft-Windows-PowerShell/Operational    20,756    99.6%
+  System                                      44,573    67.2%
+  SentinelOne/Operational                     35,868     0.0%
+```
+
+A channel at 0% is not a quiet channel — it is one with no template yet, and the
+tool says so rather than letting a coverage gap look like an absence of activity.
 
 The name comes from the evidence path — a file's stem or a folder's name,
 lowercased. `--out DIR` puts them elsewhere, `--name "Brutus"` names them

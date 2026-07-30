@@ -18,9 +18,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
 
+from ... import details as details_mod
 from ...capabilities import hint as cap_hint
-from ...models import Event, ParseContext
+from ...models import LEVEL_RANK, Event, ParseContext
 from ..base import Parser, register
+from ._evtx_ids import EVENT_TEMPLATES
 
 # ---- provider -> channel family ----
 
@@ -160,8 +162,6 @@ _LOLBIN: tuple[tuple[re.Pattern, str, str], ...] = (
     (re.compile(r"-nop|-noprofile|-w\s+hidden|-windowstyle\s+hidden", re.I), "T1564.003", "med"),
 )
 
-_SEV_ORDER = {"info": 0, "med": 1, "high": 2}
-
 # Candidate keys for the same logical field, since exact spelling varies by
 # provider and by dissect version.
 _K_EVENTID = ("EventID", "EventID_", "EventId")
@@ -169,6 +169,7 @@ _K_TIME = ("TimeCreated_SystemTime", "TimeCreated", "SystemTime")
 _K_PROVIDER = ("Provider_Name", "Provider", "ProviderName", "Provider_Guid")
 _K_CHANNEL = ("Channel",)
 _K_COMPUTER = ("Computer", "Computer_", "ComputerName")
+_K_RECORDID = ("EventRecordID", "RecordId", "RecordNumber")
 _K_USER = (
     "TargetUserName", "SubjectUserName", "User", "AccountName", "TargetAccount",
 )
@@ -178,7 +179,34 @@ _K_CMD = ("CommandLine", "ProcessCommandLine", "NewProcessCommandLine")
 _K_PARENT = ("ParentProcessName", "ParentImage", "ParentProcessId")
 
 _SCRIPT_CAP = 4096
-_MSG_CAP = 400
+
+# Field-capture budget. The allow-list this replaces discarded everything it did
+# not name, but removing it without a budget turns an 800k-event case into a
+# multi-gigabyte database. Every limit is deliberate; every truncation is marked.
+_MAX_DATA_KEYS = 40
+_MAX_VALUE_CHARS = 512
+_MAX_DATA_CHARS = 3000
+
+# Container fields already promoted to their own Event columns — keeping them in
+# data as well would only duplicate.
+_SYSTEM_KEYS = frozenset({
+    "eventid", "eventid_", "eventid_qualifiers", "eventidqualifiers",
+    "timecreated", "timecreated_systemtime", "systemtime", "provider",
+    "provider_name", "providername", "provider_guid", "channel", "computer",
+    "computer_", "computername", "eventrecordid", "recordid", "recordnumber",
+    "level", "task", "opcode", "keywords", "version", "correlation",
+    "correlation_activityid", "execution", "execution_processid",
+    "execution_threadid", "security", "security_userid", "eventsourcename",
+})
+
+# A researched template level never exceeds 'med'. EVTX_MAP is the only source of
+# 'high' and 'crit' because it has been checked against real event volumes —
+# applying a table of 74 high/critical templates blind is exactly how a tool
+# manufactures nine thousand confident falsehoods.
+_RESEARCH_TO_LEVEL = {
+    "critical": "med", "high": "med", "medium": "med",
+    "low": "low", "informational": "info",
+}
 
 
 def _unwrap(value: Any) -> Any:
@@ -233,7 +261,7 @@ def _escalate(cmdline: str, attck: list[str], severity: str) -> tuple[list[str],
         if pattern.search(cmdline):
             if technique not in out:
                 out.append(technique)
-            if _SEV_ORDER.get(sev, 0) > _SEV_ORDER.get(worst, 0):
+            if LEVEL_RANK.get(sev, 0) > LEVEL_RANK.get(worst, 0):
                 worst = sev
     return out, worst
 
@@ -352,45 +380,50 @@ class EvtxParser(Parser):
         eid = _as_text(_first(record, _K_EVENTID)).strip()
         provider = _as_text(_first(record, _K_PROVIDER))
         channel = _as_text(_first(record, _K_CHANNEL)) or channel_label
+        record_id = _as_text(_first(record, _K_RECORDID)).strip()
         family = _family(provider, channel)
 
-        # An unmapped (family, id) pair keeps a neutral label. 'other' becomes
-        # 'windows_event' rather than 'other_event' because the channel is the
-        # useful discriminator and it is already carried in data.
-        fallback = "windows_event" if family == "other" else f"{family}_event"
-        event_type, attck, severity = EVTX_MAP.get(
-            (family, eid), (fallback, [], "info")
-        )
-        attck = list(attck)
-
-        data: dict[str, Any] = {"event_id": eid, "channel": channel}
+        # Keep EVERY EventData field, bounded. The allow-list this replaces read
+        # each record's fields and then discarded all but 25 names, which is why
+        # 418,514 events in one real collection had nothing to show but the words
+        # "windows event".
+        data = self._capture(record)
+        data["event_id"] = eid
+        data["channel"] = channel
         if provider:
             data["provider"] = provider
 
         user = _as_text(_first(record, _K_USER))
         host = _as_text(_first(record, _K_COMPUTER))
 
-        for key, candidates in (
-            ("source_ip", _K_IP), ("process", _K_PROC),
-            ("cmdline", _K_CMD), ("parent", _K_PARENT),
-        ):
-            value = _as_text(_first(record, candidates))
-            if value:
-                data[key] = value
+        # The curated map decides taxonomy and severity: event_type is what the
+        # rest of the tool filters and answers questions on, and it is the only
+        # source of 'high' and 'crit'.
+        curated = EVTX_MAP.get((family, eid))
+        template = EVENT_TEMPLATES.get((provider.strip().lower(), eid))
 
-        # Family-specific fields that answer the questions people actually ask.
-        for key in (
-            "LogonType", "WorkstationName", "AuthenticationPackageName",
-            "LogonProcessName", "TargetDomainName", "SubjectUserName", "Status",
-            "ServiceName", "ImagePath", "ServiceType", "StartType",
-            "DestinationIp", "DestinationPort", "DestinationHostname", "SourcePort",
-            "QueryName", "QueryResults", "TargetFilename", "Hashes", "TargetObject",
-            "Details", "TaskName", "ProcessId", "ParentCommandLine", "Path",
-        ):
-            if key in record:
-                value = _as_text(record[key])
-                if value:
-                    data[_snake(key)] = value[:1000]
+        if curated:
+            event_type, attck, severity = curated
+            attck = list(attck)
+        else:
+            event_type = "windows_event" if family == "other" else f"{family}_event"
+            attck = list(template[3]) if template else []
+            severity = _RESEARCH_TO_LEVEL.get(template[1], "info") if template else "info"
+
+        # Title and Details are the display layer, kept separate from taxonomy. An
+        # id with no template says so in plain words rather than being dressed up
+        # as something the tool understood.
+        if template:
+            title, fields = template[0], template[2]
+        else:
+            fields = ()
+            title = (
+                f"EventID {eid} — {provider or channel or 'unknown provider'} (no template)"
+            )
+
+        detail_text, extra_text = details_mod.build_details(
+            record, fields, provider=provider, channel=channel, event_id=eid,
+        )
 
         # Sysmon packs hashes as "SHA256=...,MD5=..." — split so a hash search hits.
         if data.get("hashes"):
@@ -401,30 +434,40 @@ class EvtxParser(Parser):
                     if algo in ("md5", "sha1", "sha256", "imphash"):
                         data[algo] = digest.strip().lower()
 
-        # PowerShell script blocks are the payload; keep a bounded copy.
         script = _as_text(record.get("ScriptBlockText", ""))
         if script:
             data["script"] = script[:_SCRIPT_CAP]
 
-        cmdline = str(data.get("cmdline") or "")
-        haystack = " ".join(filter(None, [cmdline, script, str(data.get("image_path") or "")]))
+        cmdline = str(data.get("command_line") or data.get("process_command_line") or "")
+        haystack = " ".join(filter(None, [
+            cmdline, script,
+            str(data.get("image_path") or ""), str(data.get("service_file_name") or ""),
+            str(data.get("new_process_name") or ""), str(data.get("image") or ""),
+        ]))
         attck, severity = _escalate(haystack, attck, severity)
         if severity == "high" and cmdline:
             data["suspicious_cmdline"] = True
 
-        # A failed logon from an external address matters more than an internal one,
-        # but that judgement needs the whole case — leave severity, add a tag.
         tags: list[str] = []
-        if event_type in ("logon_failed", "logon_success") and data.get("logon_type") == "10":
+        if data.get("logon_type") == "10":
             tags.append("rdp")
-        if event_type in ("process_created",) and severity == "high":
+        if event_type == "process_created" and severity == "high":
             tags.append("suspicious")
+        if not template:
+            # The machine-readable counterpart to "(no template)" in the title, so
+            # the coverage summary is a query rather than a string match.
+            tags.append("auto_fields")
 
         return ctx.event(
             timestamp=timestamp,
             timestamp_desc="Event Logged",
             event_type=event_type,
-            message=self._message(event_type, eid, data, user),
+            message="",                 # derived from title + details
+            title=title,
+            details=detail_text,
+            extra_fields=extra_text,
+            channel=channel,
+            record_id=record_id or None,
             data=data,
             user=user,
             host=host,
@@ -438,20 +481,44 @@ class EvtxParser(Parser):
         )
 
     @staticmethod
-    def _message(event_type: str, eid: str, data: dict, user: str) -> str:
-        """A one-line summary that reads like a sentence, not a field dump."""
-        parts: list[str] = [f"[{eid}] {event_type.replace('_', ' ')}"]
-        if user:
-            parts.append(f"user={user}")
-        for key in ("source_ip", "logon_type", "service_name", "image_path",
-                    "process", "destination_ip", "destination_port", "query_name",
-                    "target_filename", "task_name"):
-            if data.get(key):
-                parts.append(f"{key}={data[key]}")
-        cmdline = data.get("cmdline") or data.get("script")
-        if cmdline:
-            parts.append(f"cmd={str(cmdline)[:180]}")
-        return " ".join(parts)[:_MSG_CAP]
+    def _capture(record: dict) -> dict[str, Any]:
+        """Every EventData field, snake_cased and bounded.
+
+        Bounded rather than unlimited: 800k events times unbounded fields is a
+        multi-gigabyte database. Anything dropped is counted in ``_truncated`` so
+        the loss is visible rather than silent.
+        """
+        data: dict[str, Any] = {}
+        budget = _MAX_DATA_CHARS
+        dropped = 0
+
+        for key, raw in record.items():
+            name = str(key)
+            if name.lower() in _SYSTEM_KEYS:
+                continue
+            value = _as_text(raw)
+            if not value:
+                continue
+            if len(data) >= _MAX_DATA_KEYS or budget <= 0:
+                dropped += 1
+                continue
+            value = value[:_MAX_VALUE_CHARS]
+            lowered = name.lower()
+            if "ipaddress" in lowered or lowered.endswith("address"):
+                value = details_mod.normalize_ip(value)
+                if not value:
+                    continue
+            data[_snake(name)] = value
+            budget -= len(value)
+
+        if dropped:
+            data["_truncated"] = dropped
+        return data
+
+    # There is deliberately no _message() here any more. It built the summary from
+    # a second hardcoded list of ten keys, so any event outside that list rendered
+    # as the bare string "windows event" — 418,514 rows of it in one collection.
+    # title + details replace it, and details.build_details() cannot return empty.
 
 
 def _snake(name: str) -> str:

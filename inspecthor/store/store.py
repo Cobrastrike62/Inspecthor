@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from importlib.resources import files
 from typing import Any, Iterable, Iterator, Optional
 
-from ..models import Event, EventFilter
+from ..models import Event, EventFilter, level_rank
 
 SCHEMA_VERSION = "1"
 
@@ -26,7 +26,8 @@ BULK_BATCH = 5000
 
 _EVENT_COLS = (
     "ts", "ts_epoch", "ts_desc", "host", "user", "event_type", "source_artifact",
-    "artifact_id", "artifact_path", "parser", "event_id", "severity", "message",
+    "artifact_id", "artifact_path", "parser", "event_id", "severity", "sev_rank",
+    "message", "title", "details", "extra_fields", "channel", "record_id",
     "data", "tags", "attck", "raw",
 )
 
@@ -39,13 +40,20 @@ _INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_events_source   ON events(source_artifact)",
     "CREATE INDEX IF NOT EXISTS idx_events_artifact ON events(artifact_id)",
     "CREATE INDEX IF NOT EXISTS idx_events_eid      ON events(event_id)",
+    # Makes the triage export a range scan rather than a table scan.
+    "CREATE INDEX IF NOT EXISTS idx_events_sevrank  ON events(sev_rank, ts_epoch)",
+    "CREATE INDEX IF NOT EXISTS idx_events_channel  ON events(channel)",
     "CREATE INDEX IF NOT EXISTS idx_ioc_hits_ioc    ON ioc_hits(ioc_id)",
     "CREATE INDEX IF NOT EXISTS idx_ioc_hits_event  ON ioc_hits(event_id)",
 )
 
+# Deliberately NOT indexing `data`: it is a JSON re-encoding of the same text
+# already covered by message (title + details) and extra_fields, and on an 800k
+# event case that duplicate cost 336 MB of index for no extra searchable content.
 _FTS_CREATE = """
 CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
-    message, data, raw, content='events', content_rowid='id', tokenize='unicode61'
+    message, extra_fields, raw, content='events', content_rowid='id',
+    tokenize='unicode61'
 )
 """
 
@@ -217,7 +225,9 @@ class CaseStore:
             chunk.append((
                 ev.ts_iso(), ev.ts_epoch_us(), ev.timestamp_desc, ev.host, ev.user,
                 ev.event_type, ev.source_artifact, artifact_id, ev.artifact_path,
-                ev.parser, ev.event_id, ev.severity, ev.message,
+                ev.parser, ev.event_id, ev.severity, level_rank(ev.severity),
+                ev.message, ev.title, ev.details, ev.extra_fields, ev.channel,
+                ev.record_id,
                 _jdump(ev.data), _jdump(ev.tags), _jdump(ev.attck), ev.raw,
             ))
             if len(chunk) >= batch:
@@ -251,8 +261,16 @@ class CaseStore:
             pass
         self.conn.commit()
 
-    def count_events(self) -> int:
-        return int(self.conn.execute("SELECT COUNT(*) AS n FROM events").fetchone()["n"])
+    def count_events(self, filt: EventFilter | None = None) -> int:
+        """Row count, optionally filtered — so a view can state what it hid."""
+        from ..query import build_where
+
+        where, params = build_where(filt) if filt else ("", [])
+        return int(
+            self.conn.execute(
+                f"SELECT COUNT(*) AS n FROM events{where}", params
+            ).fetchone()["n"]
+        )
 
     def query_events(self, filt: EventFilter | None = None) -> list[dict]:
         """Filtered, ordered events. Delegates WHERE building to query.py."""
@@ -307,7 +325,8 @@ class CaseStore:
         joiner = " AND" if where else " WHERE"
         sql = (
             f"SELECT * FROM events{where}{joiner} "
-            "(message LIKE ? OR data LIKE ? OR IFNULL(raw,'') LIKE ?) "
+            "(message LIKE ? OR IFNULL(extra_fields,'') LIKE ? "
+            "OR IFNULL(raw,'') LIKE ?) "
             "ORDER BY ts_epoch ASC, id ASC LIMIT ?"
         )
         return [
@@ -315,13 +334,23 @@ class CaseStore:
             for r in self.conn.execute(sql, [*params, like, like, like, limit]).fetchall()
         ]
 
-    def iter_events(self, chunk: int = 5000) -> Iterator[dict]:
-        """Stream every event in id order — for sweeps that must see all rows
-        without holding them all in memory."""
+    def iter_events(
+        self, chunk: int = 5000, filt: EventFilter | None = None
+    ) -> Iterator[dict]:
+        """Stream events in id order, without holding them all in memory.
+
+        The export path depends on this: materializing 800k dicts to write a file
+        that is read top-down once costs gigabytes of RSS for nothing.
+        """
+        from ..query import build_where
+
+        where, params = build_where(filt) if filt else ("", [])
+        joiner = " AND" if where else " WHERE"
         last = 0
         while True:
             rows = self.conn.execute(
-                "SELECT * FROM events WHERE id > ? ORDER BY id LIMIT ?", (last, chunk)
+                f"SELECT * FROM events{where}{joiner} id > ? ORDER BY id LIMIT ?",
+                [*params, last, chunk],
             ).fetchall()
             if not rows:
                 return
@@ -332,7 +361,8 @@ class CaseStore:
     def facets(self, column: str) -> list[tuple[str, int]]:
         """Distinct values and counts for a column (host/user/event_type/...)."""
         allowed = {
-            "host", "user", "event_type", "source_artifact", "parser", "severity", "event_id",
+            "host", "user", "event_type", "source_artifact", "parser", "severity",
+            "event_id", "channel", "title",
         }
         if column not in allowed:
             raise ValueError(f"not a facetable column: {column}")
@@ -352,6 +382,54 @@ class CaseStore:
             for tid in _jload(r["attck"], []):
                 tally[tid] = tally.get(tid, 0) + 1
         return sorted(tally.items(), key=lambda kv: (-kv[1], kv[0]))
+
+    def level_counts(self) -> dict[str, int]:
+        """Events per level, so a filtered view can always state what it hid."""
+        rows = self.conn.execute(
+            "SELECT severity, COUNT(*) AS n FROM events GROUP BY severity"
+        ).fetchall()
+        return {str(r["severity"] or "info"): int(r["n"]) for r in rows}
+
+    def coverage(self, limit: int = 6) -> list[dict]:
+        """Per-channel recognition: how much was interpreted vs merely transcribed.
+
+        An analyst needs to know the difference. A channel at 3% templated is not
+        a quiet channel — it is a channel this tool cannot read yet, and treating
+        those as equivalent is how a gap in coverage gets mistaken for a gap in
+        activity.
+        """
+        rows = self.conn.execute(
+            "SELECT IFNULL(NULLIF(channel,''), source_artifact) AS chan, "
+            "COUNT(*) AS total, "
+            "SUM(CASE WHEN tags LIKE '%\"auto_fields\"%' THEN 1 ELSE 0 END) AS auto "
+            "FROM events WHERE parser = 'evtx' "
+            "GROUP BY chan ORDER BY total DESC LIMIT ?", (limit,)
+        ).fetchall()
+        out = []
+        for row in rows:
+            total = int(row["total"])
+            auto = int(row["auto"] or 0)
+            out.append({
+                "channel": row["chan"] or "(unknown)",
+                "total": total,
+                "auto": auto,
+                "templated_pct": (100.0 * (total - auto) / total) if total else 0.0,
+            })
+        return out
+
+    def top_unrecognized(self, limit: int = 8) -> list[dict]:
+        """The ids worth writing a template for next, by volume."""
+        rows = self.conn.execute(
+            "SELECT event_id, IFNULL(NULLIF(channel,''),'?') AS chan, "
+            "json_extract(data, '$.provider') AS provider, COUNT(*) AS n "
+            "FROM events WHERE parser='evtx' AND tags LIKE '%\"auto_fields\"%' "
+            "GROUP BY provider, event_id ORDER BY n DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [
+            {"event_id": r["event_id"], "provider": r["provider"] or "?",
+             "channel": r["chan"], "count": int(r["n"])}
+            for r in rows
+        ]
 
     # ---- iocs ----
 
@@ -424,7 +502,8 @@ class CaseStore:
     def get_findings(self) -> list[dict]:
         rows = self.conn.execute(
             "SELECT * FROM findings ORDER BY "
-            "CASE severity WHEN 'high' THEN 0 WHEN 'med' THEN 1 ELSE 2 END, id"
+            "CASE severity WHEN 'crit' THEN 0 WHEN 'high' THEN 1 "
+            "WHEN 'med' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, id"
         ).fetchall()
         out = []
         for r in rows:

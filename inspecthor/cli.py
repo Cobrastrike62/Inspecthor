@@ -143,6 +143,43 @@ def _render_result(console: Console, result: analyze_mod.Result) -> None:
             table.add_row(label, _t(value), _t(source))
         console.print(table)
 
+    # --- how much of it the tool actually understood ---
+    if result.coverage:
+        console.print("\n[bold]Coverage — what was recognized[/]")
+        cov = Table(show_header=True, box=None, pad_edge=False, header_style="dim")
+        cov.add_column("channel", max_width=40)
+        cov.add_column("events", justify="right", width=10)
+        cov.add_column("titled", justify="right", width=7)
+        for row in result.coverage:
+            pct = row["templated_pct"]
+            style = None if pct >= 60 else ("yellow" if pct >= 20 else "red")
+            cov.add_row(_t(row["channel"]), f"{row['total']:,}", f"{pct:.0f}%", style=style)
+        console.print(cov)
+        auto = sum(r["auto"] for r in result.coverage)
+        if auto:
+            console.print(
+                f"[dim]{auto:,} event(s) show raw field names instead of a title — "
+                "transcribed, not interpreted. No template means no severity "
+                "judgement and no ATT&CK id.[/]"
+            )
+
+    if result.level_counts:
+        parts = [
+            f"{name} {result.level_counts[name]:,}"
+            for name in ("crit", "high", "med", "low", "info")
+            if result.level_counts.get(name)
+        ]
+        if parts:
+            console.print("\n[bold]Levels[/]  " + "  ·  ".join(parts))
+
+    if result.unrecognized:
+        console.print(
+            "\n[bold]Unrecognized, worth a template[/]  [dim](top by volume)[/]"
+        )
+        for row in result.unrecognized[:5]:
+            console.print(f"  {row['count']:>9,}  ", end="")
+            console.print(_t(f"{row['provider']}  {row['event_id']}"))
+
     # --- what matters ---
     notable = result.notable(25)
     if notable:
@@ -200,9 +237,15 @@ def _render_result(console: Console, result: analyze_mod.Result) -> None:
     # --- where things went ---
     console.print(
         f"\n[bold]Saved[/]\n"
-        f"  report   [cyan]{result.report_path}[/]\n"
-        f"  timeline [cyan]{result.timeline_path}[/]\n"
-        f"  case     [cyan]{result.db_path}[/]"
+        + (
+            f"  triage   [cyan]{result.triage_path}[/]"
+            f"  [dim]{result.triage_rows:,} rows — start here[/]\n"
+            if result.triage_path else ""
+        )
+        + f"  timeline [cyan]{result.timeline_path}[/]"
+          f"  [dim]{result.timeline_rows:,} rows — everything[/]\n"
+        + f"  report   [cyan]{result.report_path}[/]\n"
+        + f"  case     [cyan]{result.db_path}[/]"
     )
     console.print(
         '\n[dim]Follow up with:  inspecthor ask "when did they first log in?"'
@@ -263,16 +306,18 @@ def cmd_timeline(args: argparse.Namespace) -> int:
     if store is None:
         return 1
     try:
-        if args.all:
-            rows = store.query_events(EventFilter(limit=args.limit))
-            title = "Timeline"
-        else:
-            rows = store.query_events(EventFilter(severity="high", limit=args.limit))
-            rows += store.query_events(
-                EventFilter(severity="med", limit=max(0, args.limit - len(rows)))
-            )
-            rows.sort(key=lambda r: (str(r.get("ts")), int(r.get("id", 0))))
-            title = "Timeline (notable only — use --all for everything)"
+        # One filtered query instead of splicing two severity queries: the old
+        # splice could return fewer rows than --limit and re-sorted in Python.
+        floor = "info" if args.all else args.min_level
+        min_sev = None if floor == "info" else floor
+        total = store.count_events()
+        matching = store.count_events(EventFilter(min_severity=min_sev))
+        rows = store.query_events(EventFilter(min_severity=min_sev, limit=args.limit))
+        title = (
+            f"Timeline — {total:,} events"
+            if min_sev is None
+            else f"Timeline (level >= {floor}: {matching:,} of {total:,} events)"
+        )
         if not rows:
             console.print("[dim]nothing to show[/]")
             return 0
@@ -349,6 +394,9 @@ def build_parser() -> argparse.ArgumentParser:
     tl = sub.add_parser("timeline", help="what happened, in order")
     tl.add_argument("--all", action="store_true",
                     help="every event, not just the notable ones")
+    tl.add_argument("--min-level", default="med",
+                    choices=("info", "low", "med", "high", "crit"),
+                    help="lowest level to show (default med; --all means info)")
     tl.add_argument("--limit", type=int, default=500, metavar="N",
                     help="stop after N events (default 500)")
     tl.add_argument("--case", metavar="FILE", default=None,

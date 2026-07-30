@@ -54,6 +54,12 @@ class Result:
     report_path: str = ""
     timeline_path: str = ""
     notable_events: list[dict] = field(default_factory=list)
+    triage_path: str = ""
+    triage_rows: int = 0
+    timeline_rows: int = 0
+    coverage: list[dict] = field(default_factory=list)
+    unrecognized: list[dict] = field(default_factory=list)
+    level_counts: dict = field(default_factory=dict)
     notable_total: int = 0          # high+med count, so the CLI can say what it hides
     hints: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -292,8 +298,22 @@ def analyze(
         )
         result.report_path = str(report_path)
 
-        rows = timeline(store)
-        result.timeline_path = reporter.to_csv(rows, out / f"{slug}-timeline.csv")
+        # Two files, named for what they are. A tool that silently omits evidence
+        # from something called 'timeline.csv' is a liability — an analyst greps
+        # it, finds nothing, and concludes the activity never happened. But nobody
+        # opens 800,000 rows either, so the triage file is the one to start with.
+        result.triage_rows = store.count_events(EventFilter(min_severity="med"))
+        result.triage_path = reporter.to_csv(
+            store.iter_events(filt=EventFilter(min_severity="med")),
+            out / f"{slug}-triage.csv",
+        )
+        result.timeline_rows = store.count_events()
+        result.timeline_path = reporter.to_csv(
+            store.iter_events(), out / f"{slug}-timeline.csv"
+        )
+        result.coverage = store.coverage()
+        result.unrecognized = store.top_unrecognized()
+        result.level_counts = store.level_counts()
 
         result.notable_events, result.notable_total = _notable_events(store)
         result.hints = sorted({a.hint for a in result.artifacts if a.hint})

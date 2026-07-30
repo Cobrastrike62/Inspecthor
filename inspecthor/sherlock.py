@@ -221,7 +221,9 @@ ANSWER_RULES: tuple[AnswerRule, ...] = (
     AnswerRule(
         label="System timezone",
         patterns=(_c(r"time ?zone"), _c(r"utc offset")),
-        field="value", formatter=fmt_plain,
+        # utc_offset first: 'value' holds the raw bias ('360') or a resource
+        # string ('@tzres.dll,-161'), neither of which answers the question.
+        field=("utc_offset", "time_zone_key_name", "value"), formatter=fmt_plain,
         event_types=("system_timezone",),
         confidence=0.85, prefer="first",
     ),
