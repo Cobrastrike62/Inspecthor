@@ -1,5 +1,55 @@
 # Changelog
 
+## v0.4.0 — KAPE collections
+
+Requested: KAPE writes its collections as a VHDX, so point the tool at one.
+
+    inspecthor 2026-07-27T191212_HOSTNAME.vhdx
+
+`diskimage.py` opens VHDX, VHD, E01, VMDK and QCOW2 — a container yields *files*,
+so it sits beside the archive handling in `open_evidence()` rather than pretending
+to be a parser. It finds the NTFS volume (with or without a partition table) and
+walks it. No mounting, no elevation, no extracting first.
+
+Extraction is **selective**: a real KAPE VHDX held 1482 files, 258 of which had a
+parser, so copying the rest out would have burned gigabytes for nothing. What was
+left behind is counted and reported — `left behind 516 .pf, 477 .lnk — no parser
+for those yet` — so a coverage gap reads as a coverage gap rather than a quiet hole
+in the timeline. In-image paths get the archive-member traversal check, and NTFS
+internals are skipped by name (`$MFT` and `$Extend` deliberately excluded from that
+list: they are evidence, and will be parsed as soon as a parser claims them).
+
+**Two bugs that only a real collection could have found.**
+
+- **9,726 false high-severity findings.** `_family()` fell back to `"system"` for
+  any unrecognized provider, so anything emitting EventID 104 was reported as
+  "audit log cleared". 215 distinct providers landed in that bucket; not one of the
+  9,726 events came from the Eventlog service — they were StateRepository, an EDR
+  agent, and assorted storage drivers, all of which use 104 for something else. An
+  event ID means nothing without its provider. The families are closed sets now,
+  `_SYSTEM_PROVIDERS` names who owns the System-channel IDs, and unmapped providers
+  get a neutral `windows_event` label. High-severity events on that collection fell
+  from 9,891 to 165, with every genuine detection kept: service installs still
+  resolve from both Security-Auditing 4697 and Service Control Manager 7045,
+  start-mode changes from SCM, shutdowns from User32.
+- **The "what stands out" panel showed one finding 25 times.** 105 of the 165 real
+  high-severity events were service installs, which crowded out the
+  Defender-disabled and Run-key entries entirely. It now shows a few of each kind
+  and states the true total, because five kinds of activity tell you more than one
+  kind five times. Padding the list back up with the type that was capped was the
+  first attempt and recreated the problem — a test catches that.
+
+Also: `diskimage` capability listed in `tools`, disk-image signatures added to the
+fingerprint table so a stray image inside an evidence folder is named rather than
+called 'binary', and dev scratch scripts (`_*.sh`, `_*.py`) are now gitignored.
+
+Verified against a real 2.1 GB KAPE VHDX: 258 files extracted (917 MB), 256
+parsed, 797,969 events, timezone read from the registry as UTC-06:00 and the
+computer name likewise — the inference working on genuine evidence rather than a
+fixture.
+
+Tests 112 -> 130.
+
 ## v0.3.2 — ready to be public
 
 The repository went public, so: an audit for anything that should not be, plus the

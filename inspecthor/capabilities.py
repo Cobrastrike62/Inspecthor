@@ -30,6 +30,8 @@ CAPABILITIES: tuple[Capability, ...] = (
                "Registry hives, amcache/shimcache"),
     Capability("ntfs", ("dissect.ntfs",), None, "ntfs", None,
                "$MFT and $J USN journal"),
+    Capability("diskimage", ("dissect.target",), None, "windows", None,
+               "VHDX/VHD/E01/VMDK images — KAPE collections"),
     Capability("ese", ("dissect.esedb",), None, "ese", None,
                "SRUM / ESE databases (exfil byte counts)"),
     Capability("yara", ("yara",), None, "yara", None,

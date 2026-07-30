@@ -469,3 +469,158 @@ def test_outputs_share_the_deconflicted_name(tmp_path: Path):
         first.report_path, first.timeline_path,
         second.report_path, second.timeline_path,
     ))
+
+
+# ---- disk images (KAPE VHDX) -------------------------------------------------
+
+
+def test_disk_image_signatures_are_recognised(tmp_path: Path):
+    """A container is identified by signature, never by extension."""
+    from inspecthor.diskimage import IMAGE_KINDS, sniff_image
+    from inspecthor.engine import sniff
+
+    cases = {
+        "collection.vhdx": (b"vhdxfile" + b"\x00" * 600, "vhdx"),
+        "disk.vhd": (b"conectix" + b"\x00" * 600, "vhd"),
+        "image.E01": (b"EVF\x09\x0d\x0a\xff\x00" + b"\x00" * 600, "ewf"),
+        "vm.vmdk": (b"KDMV" + b"\x00" * 600, "vmdk"),
+    }
+    for name, (blob, expected) in cases.items():
+        path = tmp_path / name
+        path.write_bytes(blob)
+        assert sniff_image(path) == expected, name
+        assert sniff(path).kind == expected, f"{name} via engine.sniff"
+        assert expected in IMAGE_KINDS
+
+    # Something merely named .vhdx is not a disk image.
+    impostor = tmp_path / "notreally.vhdx"
+    impostor.write_text("just a text file\n")
+    assert sniff_image(impostor) == ""
+
+
+def test_corrupt_disk_image_degrades_with_a_reason(tmp_path: Path):
+    """A truncated image must report why, not crash the run."""
+    pytest.importorskip("dissect.target")
+    from inspecthor.engine import open_evidence
+
+    broken = tmp_path / "truncated.vhdx"
+    broken.write_bytes(b"vhdxfile" + b"\x00" * 200)     # valid signature, nothing else
+    root, note = open_evidence(broken, tmp_path / "out")
+    assert note, "a failure must be explained"
+    assert "vhdx" in note.lower()
+
+
+def test_image_extraction_refuses_to_escape_the_destination(tmp_path: Path):
+    """In-image paths are as untrusted as archive members."""
+    from inspecthor.diskimage import _safe_destination
+
+    dest = tmp_path / "out"
+    dest.mkdir()
+    assert _safe_destination(dest, "C/Windows/System32/x.evtx") is not None
+    assert _safe_destination(dest, "../../etc/passwd") == dest / "etc" / "passwd"
+    assert _safe_destination(dest, "/") is None
+    assert _safe_destination(dest, "") is None
+
+
+def test_ntfs_internals_are_not_extracted():
+    """$LogFile and $Bitmap are never the artifact; $MFT is, so it must pass."""
+    from inspecthor.diskimage import _NTFS_INTERNALS
+
+    for never in ("$LogFile", "$Bitmap", "$Boot", "$UpCase", "$Secure"):
+        assert never in _NTFS_INTERNALS
+    for keep in ("$MFT", "$Extend", "$J"):
+        assert keep not in _NTFS_INTERNALS, f"{keep} is real evidence"
+
+
+def test_skipped_summary_names_the_coverage_gap():
+    from collections import Counter
+    from inspecthor.diskimage import ExtractResult
+
+    result = ExtractResult(skipped=Counter({".lnk": 477, ".pf": 516, ".tmp": 3}))
+    summary = result.skipped_summary()
+    assert "516 .pf" in summary and "477 .lnk" in summary
+
+
+# ---- evtx: an event ID only means something within its provider --------------
+
+
+@pytest.mark.parametrize("provider,channel,expected", [
+    # Real providers seen emitting EventID 104 in a live KAPE collection.
+    ("Microsoft-Windows-StateRepository", "Microsoft-Windows-StateRepository/Restricted", "other"),
+    ("SentinelOne", "SentinelOne/Operational", "other"),
+    ("Microsoft-Windows-EnhancedStorage-ClassDriver", "", "other"),
+    ("Microsoft-Windows-Kernel-Cache", "", "other"),
+    # The ones that legitimately own the System-channel IDs.
+    ("Service Control Manager", "System", "system"),
+    ("Microsoft-Windows-Eventlog", "System", "system"),
+    ("", "System", "system"),
+    # Other families stay put.
+    ("Microsoft-Windows-Security-Auditing", "Security", "security"),
+    ("Microsoft-Windows-Sysmon", "", "sysmon"),
+    ("Microsoft-Windows-PowerShell", "", "powershell"),
+])
+def test_family_never_falls_back_to_system(provider, channel, expected):
+    """Regression: 'system' was a catch-all.
+
+    215 distinct providers landed there in one real collection, so anything
+    emitting 104 was reported as a high-severity "audit log cleared". Nine
+    thousand false positives is worse than no detection at all.
+    """
+    pytest.importorskip("dissect.eventlog")
+    from inspecthor.parsers.plugins.evtx import _family
+
+    assert _family(provider, channel) == expected
+
+
+def test_unrelated_provider_does_not_become_log_cleared():
+    pytest.importorskip("dissect.eventlog")
+    from inspecthor.parsers.plugins.evtx import EVTX_MAP, _family
+
+    family = _family("Microsoft-Windows-StateRepository", "")
+    assert (family, "104") not in EVTX_MAP, "unmapped provider must not inherit 104"
+    # While the real owner still resolves.
+    assert EVTX_MAP[(_family("Microsoft-Windows-Eventlog", "System"), "104")][0] == \
+        "audit_log_cleared"
+
+
+def test_security_family_is_not_matched_by_any_name_containing_security():
+    pytest.importorskip("dissect.eventlog")
+    from inspecthor.parsers.plugins.evtx import _family
+
+    # A provider that merely has 'security' in its name must not inherit 4624 etc.
+    assert _family("Microsoft-Windows-Security-Mitigations-Kernel", "") == "other"
+
+
+def test_notable_events_show_variety_not_one_repeated_finding(tmp_path: Path):
+    """Regression: 105 of 165 high events were service installs, filling the panel."""
+    from datetime import datetime, timezone
+    from inspecthor.analyze import _notable_events
+    from inspecthor.models import ParseContext
+
+    store = CaseStore(str(tmp_path / "v.db"))
+    try:
+        ctx = ParseContext(evidence_root=tmp_path)
+        events = []
+        base = datetime(2024, 3, 1, tzinfo=timezone.utc)
+        # One type floods; three others are the things you must not miss.
+        for i in range(80):
+            events.append(ctx.event(
+                timestamp=base, timestamp_desc="d", message=f"service {i}",
+                event_type="service_installed", severity="high"))
+        for kind in ("defender_disabled", "autostart_run_key", "audit_log_cleared"):
+            events.append(ctx.event(
+                timestamp=base, timestamp_desc="d", message=kind,
+                event_type=kind, severity="high"))
+        store.add_events_bulk(events)
+        store.finalize()
+
+        notable, total = _notable_events(store, limit=20, per_type=4)
+        kinds = {r["event_type"] for r in notable}
+        assert "defender_disabled" in kinds, "a rare finding was crowded out"
+        assert "autostart_run_key" in kinds
+        assert sum(1 for r in notable if r["event_type"] == "service_installed") <= 4
+        # Not padded back up with the flooding type — but the real count is reported.
+        assert total == 83, "the caller must be told how many notable events exist"
+        assert len(notable) < 20
+    finally:
+        store.close()

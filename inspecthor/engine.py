@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, Optional
 
+from . import diskimage
 from .models import ArtifactResult, Event, Fingerprint, ParseContext
 from .parsers._loader import select_parser
 
@@ -61,6 +62,16 @@ _MAGIC: tuple[tuple[bytes, str], ...] = (
     (b"\x7fELF", "elf"),
     (b"%PDF", "pdf"),
     (b"\xd0\xcf\x11\xe0", "ole"),            # legacy Office / MSI / some jumplists
+    # Virtual disks and forensic images. These hold files rather than events, so
+    # diskimage.py opens them; they are listed here so a stray image inside an
+    # evidence folder is named rather than dismissed as 'binary'.
+    (b"vhdxfile", "vhdx"),                   # Hyper-V VHDX — what KAPE writes
+    (b"conectix", "vhd"),
+    (b"cxsparse", "vhd"),
+    (b"EVF\x09\x0d\x0a\xff\x00", "ewf"),     # EnCase E01
+    (b"LVF\x09\x0d\x0a\xff\x00", "ewf"),
+    (b"KDMV", "vmdk"),
+    (b"QFI\xfb", "qcow2"),
 )
 
 # LNK is a fixed 76-byte header plus a known CLSID — checking both avoids
@@ -218,12 +229,34 @@ def _extract_tar(src: Path, dest: Path) -> tuple[bool, str]:
         return False, f"{type(exc).__name__}: {exc}"
 
 
-def open_evidence(src: Path, workdir: Path | None = None) -> tuple[Path, str]:
+def _parser_wants(path: Path, header: bytes, name: str) -> bool:
+    """Would any registered parser claim this file?
+
+    Used to decide what to pull out of a disk image. Small text files pass too, so
+    a collection's own notes or task file are not left behind.
+    """
+    kind = "text" if (header and b"\x00" not in header[:256]) else "binary"
+    for magic, sniffed in _MAGIC:
+        if header.startswith(magic):
+            kind = sniffed
+            break
+    chosen, unavailable = select_parser(path, header, kind)
+    if chosen is not None or unavailable is not None:
+        return True
+    # generic_text claims most text, but be explicit about the small-notes case.
+    return kind == "text" and len(header) < _HEADER_BYTES
+
+
+def open_evidence(
+    src: Path,
+    workdir: Path | None = None,
+    progress=None,
+) -> tuple[Path, str]:
     """Resolve evidence to a directory to walk.
 
-    Returns ``(root, note)``. A directory is used in place; an archive is
-    extracted into ``workdir``. ``note`` carries anything the console should say
-    (extraction failures, password used).
+    Returns ``(root, note)``. A directory is used in place; an archive or disk
+    image is opened into ``workdir``. ``note`` carries anything the console should
+    say — an extraction failure, or what a disk image contained.
     """
     src = Path(src)
     if src.is_dir():
@@ -235,6 +268,27 @@ def open_evidence(src: Path, workdir: Path | None = None) -> tuple[Path, str]:
     dest.mkdir(parents=True, exist_ok=True)
 
     fingerprint = sniff(src)
+
+    # Virtual disks and forensic images: KAPE writes VHDX, imagers write E01.
+    if fingerprint.kind in diskimage.IMAGE_KINDS:
+        result = diskimage.extract(
+            src, dest, wanted=_parser_wants,
+            max_files=_MAX_FILES, progress=progress,
+        )
+        if result.root is None or result.extracted == 0:
+            reason = "; ".join(result.notes) or "nothing parseable inside"
+            return src, f"{fingerprint.kind} image: {reason}"
+        note = (
+            f"{fingerprint.kind} image: pulled {result.extracted} parseable file(s) "
+            f"({result.bytes_written // (1024 * 1024)} MB)"
+        )
+        gap = result.skipped_summary()
+        if gap:
+            note += f"; left behind {gap} — no parser for those yet"
+        if result.notes:
+            note += "; " + "; ".join(result.notes[:2])
+        return result.root, note
+
     if fingerprint.kind == "zip":
         ok, why = _extract_zip(src, dest)
         return (dest, "") if ok else (src, f"zip extract failed: {why}")

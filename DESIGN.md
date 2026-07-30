@@ -5,11 +5,12 @@ Notes for anyone changing the code. The README covers using it.
 ## The shape
 
 ```
-evidence/  or  sherlock.zip
+evidence/  ·  sherlock.zip  ·  KAPE .vhdx
       |
    analyze.py ── the only orchestration; one call does the whole case
       |
       +-- engine.py    fingerprint by magic bytes, route to a parser, stream events
+      +-- diskimage.py open VHDX/E01/VMDK, pull out the parseable files
       +-- infer.py     derive timezone / year / host FROM the evidence
       +-- detect/      YARA over bytes, Sigma over normalized events
       +-- ioc.py       indicators, linked back to the events they came from
@@ -56,6 +57,40 @@ Two rules this depends on:
 - Every inferred value carries a human-readable source string, and the CLI prints
   it. An invisible inference that shifts a timeline is worse than a wrong one you
   can see.
+
+## Disk images
+
+`diskimage.py` handles VHDX/VHD/E01/VMDK/QCOW2. These belong beside the archive
+handling in `open_evidence()`, not in a parser: a container yields *files*, and a
+parser yields events.
+
+`dissect.target.container.open()` identifies the container, `volume.open()` finds
+partitions (falling back to treating the stream as one bare volume, which is what
+some collection tools write), and `NtfsFilesystem` walks it.
+
+Extraction is **selective**. A real KAPE VHDX held 1482 files of which 258 had a
+parser; copying the rest out would have burned gigabytes for nothing. What was
+skipped is counted by extension and reported, so the analyst sees the coverage gap
+instead of an unexplained gap in the timeline. In-image paths get the same
+traversal check as archive members, and NTFS internals (`$LogFile`, `$Bitmap`, …)
+are skipped by name — but `$MFT` and `$Extend` are not, because they are real
+evidence and will be picked up as soon as a parser claims them.
+
+## An event ID means nothing without its provider
+
+`EVTX_MAP` is keyed on `(family, EventID)` and `_family()` returns `"other"` for
+anything it does not recognize. That matters more than it looks.
+
+It used to fall back to `"system"`. On a real collection, 215 distinct providers
+landed in that bucket, so every one of them emitting EventID 104 was reported as a
+high-severity "audit log cleared" — 9,726 false positives, none of them from the
+Eventlog service. The real sources were StateRepository, an EDR agent, and a
+handful of storage drivers, all of which use 104 for something else entirely.
+
+Nine thousand confident falsehoods is worse than no detection: it teaches the
+analyst to ignore the tool. So the families are closed sets, `_SYSTEM_PROVIDERS`
+lists who legitimately owns the System-channel IDs, and unmapped providers get a
+neutral `windows_event` label with their channel preserved in `data`.
 
 ## Parser contract
 
@@ -143,3 +178,7 @@ jump lists, SRUM (exfil byte counts), browser history, PCAP, scheduled-task XML,
 memory via Volatility 3, cloud logs (CloudTrail, M365 UAL), WMI, email.
 
 Each is one file in `parsers/plugins/`.
+
+Prefetch and LNK are the highest-value next two: a KAPE collection is largely
+made of them (516 and 477 files in the one measured), and today they are
+extracted-and-skipped rather than parsed.

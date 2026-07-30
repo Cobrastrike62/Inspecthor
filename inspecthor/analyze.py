@@ -11,6 +11,7 @@ CONSTRAINT: silent library. Returns a :class:`Result`; the CLI renders it.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import timezone, tzinfo
 from pathlib import Path
@@ -53,6 +54,7 @@ class Result:
     report_path: str = ""
     timeline_path: str = ""
     notable_events: list[dict] = field(default_factory=list)
+    notable_total: int = 0          # high+med count, so the CLI can say what it hides
     hints: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
@@ -208,7 +210,8 @@ def analyze(
             result.warnings.append(f"could not replace {stale.name}: {exc}")
 
     step("unpacking evidence")
-    root, note = open_evidence(source, out / f"{slug}-evidence")
+    # A disk image can take a while to walk, so the progress callback goes in.
+    root, note = open_evidence(source, out / f"{slug}-evidence", progress=step)
     if note:
         result.warnings.append(note)
     if not root.exists():
@@ -292,7 +295,7 @@ def analyze(
         rows = timeline(store)
         result.timeline_path = reporter.to_csv(rows, out / f"{slug}-timeline.csv")
 
-        result.notable_events = _notable_events(store)
+        result.notable_events, result.notable_total = _notable_events(store)
         result.hints = sorted({a.hint for a in result.artifacts if a.hint})
     finally:
         store.close()
@@ -347,9 +350,29 @@ def _run_detections(
     return added
 
 
-def _notable_events(store, limit: int = 60) -> list[dict]:
-    """High severity first, then medium — what an analyst reads before the rest."""
-    rows = store.query_events(EventFilter(severity="high", limit=limit))
-    if len(rows) < limit:
-        rows += store.query_events(EventFilter(severity="med", limit=limit - len(rows)))
-    return rows
+def _notable_events(store, limit: int = 60, per_type: int = 4) -> tuple[list[dict], int]:
+    """The events worth reading first, with variety. Returns ``(rows, total)``.
+
+    High severity before medium, capped per event type. On a real collection 105 of
+    165 high-severity events were service installs, which would have filled the
+    whole panel with one repeated finding and buried the Defender-disabled and
+    Run-key entries under it. Seeing five kinds of activity beats seeing one kind
+    five times.
+
+    Deliberately NOT padded back to ``limit`` with the type that was capped —
+    padding recreates the problem. The second return value is the true count of
+    notable events so the caller can say how much it is not showing; a short list
+    plus an honest number beats a full list that all says the same thing.
+    """
+    picked: list[dict] = []
+    seen: Counter[str] = Counter()
+    total = 0
+
+    for severity in ("high", "med"):
+        for row in store.query_events(EventFilter(severity=severity)):
+            total += 1
+            kind = str(row.get("event_type") or "")
+            if len(picked) < limit and seen[kind] < per_type:
+                seen[kind] += 1
+                picked.append(row)
+    return picked, total

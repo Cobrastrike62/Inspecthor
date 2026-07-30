@@ -147,10 +147,16 @@ def _render_result(console: Console, result: analyze_mod.Result) -> None:
     notable = result.notable(25)
     if notable:
         console.print("\n[bold]What stands out[/]")
-        table, hidden = reporter.timeline_table(notable, title="")
+        table, _hidden = reporter.timeline_table(notable, title="")
         console.print(table)
-        if hidden:
-            console.print(f"[dim]{hidden} more in the report[/]")
+        # A few of each kind are shown rather than 25 of whichever event type is
+        # loudest, so state how many notable events there actually are.
+        if result.notable_total > len(notable):
+            console.print(
+                f"[dim]a sample of {len(notable)} kinds shown; "
+                f"{result.notable_total} notable events in total — "
+                "all of them are in the report[/]"
+            )
 
     # --- answers ---
     if result.answers:

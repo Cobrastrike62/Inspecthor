@@ -128,9 +128,31 @@ Run `inspecthor` with no arguments to see what is available.
 | Timestamped app logs, Apache/nginx access logs, plain text | nothing |
 | Windows Event Logs — Security, System, PowerShell, Sysmon, Task, RDP, Defender | `--full` |
 | Registry hives — Run keys, services, timezone, USB, UserAssist, amcache | `--full` |
+| **KAPE collections** and disk images — VHDX, VHD, E01, VMDK, QCOW2 | `--full` |
 
 Not yet: `$MFT`/`$J`, prefetch, LNK, SRUM, browser history, PCAP, memory, cloud
 logs. Those are the next parsers.
+
+### KAPE collections
+
+Point it at the VHDX KAPE wrote — no mounting, no extracting first:
+
+```bash
+inspecthor 2026-07-27T191212_HOSTNAME.vhdx
+```
+
+It opens the container, finds the NTFS volume, and pulls out **only the files it
+can parse**, because a collection is mostly formats there is no parser for yet and
+copying all of it out would waste gigabytes. It tells you what it left behind:
+
+```
+vhdx image: pulled 258 parseable file(s) (917 MB); left behind 516 .pf, 477 .lnk,
+43 .automaticdestinations-ms — no parser for those yet
+```
+
+That is also where the timezone comes from: a KAPE collection includes the
+registry, so the host's real UTC offset and computer name are read out of it
+instead of guessed.
 
 ## Why it can skip the flags
 

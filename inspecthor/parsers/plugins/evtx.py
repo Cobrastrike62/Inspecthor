@@ -25,8 +25,32 @@ from ..base import Parser, register
 # ---- provider -> channel family ----
 
 
+# Providers that legitimately emit the System-channel event IDs mapped below.
+#
+# This list exists because the family must NOT be a catch-all. Event IDs are only
+# meaningful within a provider: 104 means "log cleared" from the Eventlog service,
+# but Microsoft-Windows-StateRepository, SentinelOne and a dozen storage drivers
+# also emit 104 for entirely unrelated things. A real KAPE collection had 215
+# distinct providers reaching this point, and treating them all as System turned
+# 9,726 routine events into high-severity "audit log cleared" findings — the kind
+# of false positive that makes an analyst stop believing the tool.
+_SYSTEM_PROVIDERS = frozenset({
+    "service control manager",
+    "eventlog",
+    "microsoft-windows-eventlog",
+    "user32",
+    "microsoft-windows-winlogon",
+    "microsoft-windows-kernel-general",
+    "microsoft-windows-kernel-power",
+})
+
+
 def _family(provider: str, channel: str = "") -> str:
-    """Collapse a provider/channel into the family the ID map is keyed on."""
+    """Collapse a provider/channel into the family the ID map is keyed on.
+
+    Returns ``"other"`` for anything unrecognized, so an unmapped provider cannot
+    inherit another channel's meaning for the same numeric ID.
+    """
     text = f"{provider} {channel}".lower()
     if "sysmon" in text:
         return "sysmon"
@@ -38,9 +62,13 @@ def _family(provider: str, channel: str = "") -> str:
         return "rdp"
     if "defender" in text:
         return "defender"
-    if "security" in text:
+    # Security IDs (4624, 4688, …) come from the audit provider or the Security
+    # channel — not from every provider with 'security' somewhere in its name.
+    if "security-auditing" in text or channel.strip().lower() == "security":
         return "security"
-    return "system"
+    if provider.strip().lower() in _SYSTEM_PROVIDERS or channel.strip().lower() == "system":
+        return "system"
+    return "other"
 
 
 # (family, EventID) -> (event_type, [attck], severity)
@@ -326,8 +354,12 @@ class EvtxParser(Parser):
         channel = _as_text(_first(record, _K_CHANNEL)) or channel_label
         family = _family(provider, channel)
 
+        # An unmapped (family, id) pair keeps a neutral label. 'other' becomes
+        # 'windows_event' rather than 'other_event' because the channel is the
+        # useful discriminator and it is already carried in data.
+        fallback = "windows_event" if family == "other" else f"{family}_event"
         event_type, attck, severity = EVTX_MAP.get(
-            (family, eid), (f"{family}_event", [], "info")
+            (family, eid), (fallback, [], "info")
         )
         attck = list(attck)
 

@@ -35,6 +35,10 @@ timeline.jsonl
 # user-supplied detection rules (bundled rules under inspecthor/data/ ARE tracked)
 rules-local/
 
+# local dev scratch: sync/probe helpers that must never reach the repo
+_*.sh
+_*.py
+
 # editor / os
 .idea/
 .vscode/
