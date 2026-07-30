@@ -19,9 +19,11 @@ from typing import Any, Iterable, Sequence
 from rich.table import Table
 from rich.text import Text
 
-# Severity -> rich style. High must be unmissable in a wall of rows.
-SEV_STYLE = {"high": "bold red", "med": "yellow", "info": "dim"}
-SEV_MARK = {"high": "!!", "med": "!", "info": " "}
+from .models import LEVEL_MARK, LEVEL_RANK, LEVEL_STYLE
+
+# Five levels, from the single definition in models so nothing drifts.
+SEV_STYLE = LEVEL_STYLE
+SEV_MARK = LEVEL_MARK
 
 
 def _t(value: Any) -> Text:
@@ -57,15 +59,20 @@ def _sev(row: dict) -> str:
 
 
 def timeline_table(rows: Sequence[dict], title: str = "Timeline") -> tuple[Table, int]:
-    """Build a rich timeline table. Returns ``(table, hidden_count)``."""
+    """Build a rich timeline table. Returns ``(table, hidden_count)``.
+
+    Shows Title and Details rather than event_type and source_artifact. The latter
+    two are filter keys, not reading material — 'evtx/Security' adds nothing once
+    the channel and event id are visible, and a machine slug is not a sentence.
+    """
     table = Table(title=title, header_style="bold", expand=True)
-    table.add_column("", width=2, no_wrap=True)
+    table.add_column("", width=3, no_wrap=True)
     table.add_column("When (UTC)", width=19, no_wrap=True)
-    table.add_column("Host", max_width=14, no_wrap=True)
-    table.add_column("User", max_width=16, no_wrap=True)
-    table.add_column("Type", max_width=20, no_wrap=True)
-    table.add_column("Source", max_width=16, no_wrap=True)
-    table.add_column("Message", overflow="fold")
+    table.add_column("Host", max_width=13, no_wrap=True)
+    table.add_column("User", max_width=14, no_wrap=True)
+    table.add_column("Title", max_width=28, overflow="fold")
+    table.add_column("ID", width=6, no_wrap=True)
+    table.add_column("Details", overflow="fold")
 
     shown = rows[:SCREEN_ROWS]
     for row in shown:
@@ -75,9 +82,9 @@ def timeline_table(rows: Sequence[dict], title: str = "Timeline") -> tuple[Table
             _t(row.get("ts")),
             _t(row.get("host")),
             _t(row.get("user")),
-            _t(row.get("event_type")),
-            _t(row.get("source_artifact")),
-            _t(row.get("message")),
+            _t(row.get("title") or _pretty_type(row.get("event_type"))),
+            _t(row.get("event_id")),
+            _t(row.get("details") or row.get("message")),
             style=SEV_STYLE.get(severity),
         )
     return table, max(0, len(rows) - len(shown))
@@ -174,24 +181,68 @@ def _split_ts(ts: str) -> tuple[str, str]:
         return date_part, time_part or "00:00:00"
 
 
+# The timeline CSV, in reading order. Columns 1-8 are what an analyst scans;
+# the rest are for filtering, pivoting and provenance.
+#
+# The raw `data` JSON column is deliberately absent. It is what made the previous
+# file unreadable — a median 126-char and up-to-7,224-char JSON blob per row, in a
+# file whose problem was already width, and Excel truncates a cell at 32,767 chars
+# anyway. Losslessness lives in two other places: to_jsonl() and the case
+# database. `ExtraFields` keeps the CSV scannable without it.
+CSV_COLUMNS = (
+    "Timestamp", "Level", "Title", "Host", "Channel", "EventID", "User", "Details",
+    "Type", "TimestampDesc", "ATTCK", "Tags", "Source", "RecordId", "ExtraFields",
+    "ArtifactPath", "Id",
+)
+
+
+def _pretty_type(event_type: object) -> str:
+    """'service_installed' -> 'Service installed'. A readable last resort."""
+    text = str(event_type or "").replace("_", " ").strip()
+    return text[:1].upper() + text[1:] if text else "Event"
+
+
+def _csv_row(row: dict) -> dict:
+    """One store row in reading order, with nothing JSON-encoded."""
+    attck = row.get("attck") or []
+    tags = row.get("tags") or []
+    return {
+        "Timestamp": row.get("ts") or "",
+        "Level": row.get("severity") or "info",
+        # Never blank: parsers other than evtx do not set a title, and an
+        # empty column in the one place an analyst reads is the bug this
+        # whole change exists to fix.
+        "Title": row.get("title") or _pretty_type(row.get("event_type")),
+        "Host": row.get("host") or "",
+        "Channel": row.get("channel") or "",
+        "EventID": row.get("event_id") or "",
+        "User": row.get("user") or "",
+        "Details": row.get("details") or row.get("message") or "",
+        "Type": row.get("event_type") or "",
+        "TimestampDesc": row.get("ts_desc") or "",
+        "ATTCK": " ".join(attck) if isinstance(attck, list) else str(attck),
+        "Tags": " ".join(tags) if isinstance(tags, list) else str(tags),
+        "Source": row.get("source_artifact") or "",
+        "RecordId": row.get("record_id") or "",
+        "ExtraFields": row.get("extra_fields") or "",
+        "ArtifactPath": row.get("artifact_path") or "",
+        "Id": row.get("id") or "",
+    }
+
+
 def to_csv(rows: Iterable[dict], path: str | Path) -> str:
-    """Native column dump — the format a spreadsheet wants."""
-    rows = list(rows)
+    """The timeline a human opens.
+
+    Streams. The previous version began with ``list(rows)``, which materialized
+    every row — at 798k events that is several gigabytes of dicts to write a file
+    that is read top-down once.
+    """
     path = Path(path)
-    columns = (
-        "id", "ts", "ts_desc", "host", "user", "event_type", "source_artifact",
-        "parser", "event_id", "severity", "message", "data", "tags", "attck",
-        "artifact_path",
-    )
     with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=columns, extrasaction="ignore")
+        writer = csv.DictWriter(handle, fieldnames=list(CSV_COLUMNS))
         writer.writeheader()
         for row in rows:
-            out = dict(row)
-            for key in ("data", "tags", "attck"):
-                if isinstance(out.get(key), (dict, list)):
-                    out[key] = json.dumps(out[key], ensure_ascii=False)
-            writer.writerow(out)
+            writer.writerow(_csv_row(row))
     return str(path)
 
 
@@ -218,7 +269,9 @@ def to_timesketch_csv(rows: Iterable[dict], path: str | Path) -> str:
             tags = row.get("tags") or []
             attck = row.get("attck") or []
             writer.writerow({
-                "message": row.get("message") or "",
+                "message": row.get("message")
+                           or " ¦ ".join(p for p in (row.get("title"),
+                                                     row.get("details")) if p),
                 # Timesketch parses ISO8601; the store keeps UTC so append the Z.
                 "datetime": f"{row.get('ts', '')}".replace(" ", "T") + "Z",
                 "timestamp_desc": row.get("ts_desc") or "Event Logged",

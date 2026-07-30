@@ -1,5 +1,81 @@
 # Changelog
 
+## v0.5.0 — a timeline an analyst can read
+
+Reported, correctly: "a forensics analyst would not be able to make much of what
+inspecthor parsed." Measured on the real 798k-event KAPE collection, the complaint
+was worse than it sounded — **418,514 rows had nothing to show but the words
+"windows event"**, and 89% of all rows sat in a generic bucket.
+
+**Root cause, and it was mine.** `evtx.py` captured fields from a hardcoded
+allow-list of 25 names and built its message from a second hardcoded list of ten.
+Real evidence has 200+ providers, so for most of them the parser read every field
+out of the record and then threw it away. The data was always there.
+
+**`details.py`** now renders one readable line per event, in Hayabusa's shape
+(`Label: value ¦ Label: value`, U+00A6 rather than a pipe because the markdown
+report escapes pipes). Three tiers, with an assert that none can return empty:
+
+1. a curated template — `Type: 10 (RemoteInteractive) ¦ TgtUser: jsmith ¦ SrcIP: …`
+2. no template — every field, labelled with its **raw Windows name**
+3. no fields at all — provenance and the reason, not a bare noun
+
+The label style is the honesty signal: curated labels mean the tool understood the
+event, raw Windows names mean it is only transcribing one. Coded values are decoded
+in place while keeping the raw value (`Status: 0xC000006A (bad password)`), with
+Kerberos status dispatched separately from NTSTATUS since `0x18` means different
+things to each.
+
+**252 event templates**, keyed on `(provider, id)`: 247 enumerated across Security,
+System, PowerShell, Sysmon, Task Scheduler, RDP, Defender, WinRM and SMB, plus five
+written by hand for the highest-volume ids in the measured collection (4673, 4662,
+4985, 4670, 10016), none of which had one. Researched levels are **capped at
+`med`** — only the curated map may say `high` or `crit`, because applying 74
+researched high/critical templates blind is exactly how v0.3 produced 9,726 false
+positives.
+
+**Five levels** (`crit/high/med/low/info`), added additively so the previous three
+keep their spellings and every existing filter and test kept working. `low` means
+recognized-and-routine, `info` means noise-or-unrecognized — which makes
+`count(level > info)` a free measure of how much was understood.
+
+**Two output files** instead of one unreadable one:
+
+- `<case>-triage.csv` — level >= med. 31,362 rows on the real collection.
+- `<case>-timeline.csv` — everything, 797,969 rows.
+
+Both carry readable columns (`Timestamp, Level, Title, Host, Channel, EventID,
+User, Details, …`). The raw `data` JSON column is gone from the CSV: it was the
+thing that made the file unreadable, Excel truncates a cell at 32,767 chars, and
+losslessness already lives in the JSONL export and the database. The export also
+streams now instead of materializing 798k dicts.
+
+**A coverage block** every run: per-channel recognition rate and the top
+unrecognized ids as template candidates. A channel at 0% is reported as a gap in
+coverage rather than left to look like an absence of activity.
+
+**Also fixed**
+
+- `Title` was blank for 3,723 registry and text rows, because only the EVTX parser
+  set one. Falls back to a prettified event type — an empty column in the one place
+  an analyst reads was the whole bug.
+- FTS indexed `data`, a JSON re-encoding of text already covered by `message` and
+  `extra_fields`: 336 MB of duplicate index on this case.
+- `EventRecordID` and `channel` are captured and promoted to columns. The record id
+  is the only way a report can point at an exact source record; the channel is what
+  analysts actually filter on and it was buried inside the JSON.
+- `inspecthor timeline` takes `--min-level` and always states what it filtered out.
+  Replaces a two-query severity splice that could return fewer rows than `--limit`
+  and re-sorted in Python.
+- The timezone answer returned `360` and `@tzres.dll,-161` — raw registry values.
+  It now prefers the decoded offset.
+
+Verified on the real 2.1 GB KAPE VHDX: 797,969 events, **zero rows with an empty
+Details**, zero untitled rows in the triage file, Security 93.9% and PowerShell
+99.6% titled.
+
+Tests 130 -> 157.
+
 ## v0.4.0 — KAPE collections
 
 Requested: KAPE writes its collections as a VHDX, so point the tool at one.

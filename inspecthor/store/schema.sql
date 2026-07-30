@@ -43,8 +43,16 @@ CREATE TABLE IF NOT EXISTS events (
     artifact_path   TEXT,
     parser          TEXT,
     event_id        TEXT,            -- native id (Windows EventID / syslog msgid)
-    severity        TEXT DEFAULT 'info',   -- 'high'|'med'|'info'
+    severity        TEXT DEFAULT 'info',   -- 'crit'|'high'|'med'|'low'|'info'
+    -- Denormalized so a "level >= med" filter can use an index. At 800k rows a
+    -- CASE expression over severity means a full scan on every triage query.
+    sev_rank        INTEGER DEFAULT 0,
     message         TEXT,            -- one-line summary
+    title           TEXT,            -- human sentence: 'Logon succeeded'
+    details         TEXT,            -- 'Label: value ¦ Label: value'
+    extra_fields    TEXT,            -- fields the Details template did not consume
+    channel         TEXT,            -- Windows channel; the discriminator analysts filter on
+    record_id       TEXT,            -- EventRecordID: points at the exact source record
     data            TEXT,            -- JSON: parser-specific fields
     tags            TEXT,            -- JSON list[str]
     attck           TEXT,            -- JSON list[str] of validated MITRE ids

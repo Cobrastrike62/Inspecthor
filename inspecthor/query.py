@@ -10,7 +10,7 @@ import re
 from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Any
 
-from .models import EventFilter, to_utc
+from .models import LEVEL_RANK, EventFilter, to_utc
 
 # Accepted --from/--to spellings, loosest last. Bare dates mean midnight UTC.
 _TIME_FORMATS = (
@@ -122,6 +122,12 @@ def build_where(filt: EventFilter) -> tuple[str, list[Any]]:
     if filt.source_artifact:
         clauses.append("(source_artifact = ? OR source_artifact LIKE ?)")
         params.extend([filt.source_artifact, f"{filt.source_artifact}/%"])
+
+    # A level floor, which an exact-match severity cannot express. Uses the
+    # denormalized sev_rank column so the index applies.
+    if filt.min_severity:
+        clauses.append("sev_rank >= ?")
+        params.append(LEVEL_RANK.get(str(filt.min_severity), 0))
 
     # tags is a JSON array; a quoted substring match avoids 'rdp' hitting 'rdp_x'.
     if filt.tag:

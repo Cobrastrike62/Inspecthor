@@ -19,7 +19,30 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from .attack import AttackDB
 
 # Severity is a closed set; the console colours on it and triage sorts by it.
-SEVERITIES = ("high", "med", "info")
+#
+# Five levels, worst first. The addition of 'crit' and 'low' is deliberately
+# additive — 'high', 'med' and 'info' keep their exact spellings so every existing
+# filter and test keeps working. The extra resolution is what makes 800k events
+# tractable, under one rule:
+#
+#     low  = recognized and routine
+#     info = noise, or not recognized at all
+#
+# That keeps 'info' honest: an event with no template is 'info' and can never be
+# promoted, so count(level > info) is a free measure of how much the tool actually
+# understood. 'crit' is reserved and small — log cleared, Defender disabled — and
+# is never reached by a heuristic.
+SEVERITIES = ("crit", "high", "med", "low", "info")
+LEVEL_RANK = {"crit": 4, "high": 3, "med": 2, "low": 1, "info": 0}
+LEVEL_MARK = {"crit": "!!!", "high": "!!", "med": "!", "low": "·", "info": " "}
+LEVEL_STYLE = {
+    "crit": "bold white on red", "high": "bold red", "med": "yellow",
+    "low": None, "info": "dim",
+}
+
+
+def level_rank(level: str) -> int:
+    return LEVEL_RANK.get(str(level or "info"), 0)
 
 
 def to_utc(value: datetime, assume: tzinfo = timezone.utc) -> datetime:
@@ -60,6 +83,16 @@ class Event:
     parser: str = ""                    # producing parser.name
     artifact_sha256: str = ""           # sha256 of the SOURCE FILE (chain of custody)
     raw: Optional[str] = None           # optional bounded raw record (fidelity, FTS)
+    # Display fields. `title` is the human sentence ("Logon succeeded"), `details`
+    # the labelled one-line field summary; together they replace a message that
+    # used to read "windows event" for 418k rows. `channel` and `record_id` were
+    # buried in data or not captured — an analyst filters on the channel, and the
+    # record id is the only way a report can point at the exact source record.
+    title: str = ""
+    details: str = ""
+    extra_fields: str = ""              # fields the template did not consume
+    channel: str = ""
+    record_id: Optional[str] = None
 
     def utc(self) -> datetime:
         """UTC view of the timestamp, whatever offset it was built with."""
@@ -143,6 +176,11 @@ class ParseContext:
         artifact_path: str = "",
         parser: str = "",
         raw: str | None = None,
+        title: str = "",
+        details: str = "",
+        extra_fields: str = "",
+        channel: str = "",
+        record_id: str | None = None,
     ) -> Event:
         """Build an Event with the case invariants already applied.
 
@@ -150,6 +188,10 @@ class ParseContext:
         UTC normalization, the host default, and ATT&CK validation for free —
         which is why every bundled parser uses it.
         """
+        # A caller that supplies title+details need not repeat itself in message:
+        # the searchable text is exactly those two joined.
+        if not message and (title or details):
+            message = " ¦ ".join(p for p in (title, details) if p)
         return Event(
             timestamp=to_utc(timestamp, self.tz),
             timestamp_desc=timestamp_desc,
@@ -167,6 +209,11 @@ class ParseContext:
             parser=parser,
             artifact_sha256=self.artifact_sha256,
             raw=raw,
+            title=title,
+            details=details,
+            extra_fields=extra_fields,
+            channel=channel,
+            record_id=record_id,
         )
 
 
@@ -182,7 +229,10 @@ class EventFilter:
     event_type: Optional[str] = None
     source_artifact: Optional[str] = None
     parser: Optional[str] = None
-    severity: Optional[str] = None      # 'high'|'med'|'info'
+    severity: Optional[str] = None      # exact match: 'crit'|'high'|'med'|'low'|'info'
+    # A floor rather than an exact match. Exists because triage means "everything
+    # at least this serious", and an exact-match filter cannot express that.
+    min_severity: Optional[str] = None
     tag: Optional[str] = None
     limit: int = 0                      # 0 = unbounded
     order: str = "asc"                  # 'asc'|'desc' by (ts_epoch, id)
