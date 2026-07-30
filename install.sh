@@ -63,8 +63,12 @@ if [ "$USE_PIPX" -eq 1 ]; then
   pipx install --editable "$TARGET" --force
   BIN="$(command -v inspecthor || echo "$HOME/.local/bin/inspecthor")"
 else
-  echo "==> creating .venv"
-  [ -x .venv/bin/python ] || "$PYTHON" -m venv .venv
+  if [ -x .venv/bin/python ]; then
+    echo "==> reusing the existing .venv"
+  else
+    echo "==> creating .venv"
+    "$PYTHON" -m venv .venv
+  fi
   ./.venv/bin/pip install --quiet --upgrade pip setuptools wheel "${PIP_ARGS[@]}"
   echo "==> pip install -e $TARGET"
   ./.venv/bin/pip install -e "$TARGET" "${PIP_ARGS[@]}"

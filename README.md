@@ -120,6 +120,16 @@ meets a file it cannot read, it says which install unlocks it:
 
 Run `inspecthor` with no arguments to see what is available.
 
+### Updating
+
+```bash
+cd inspecthor && git pull
+```
+
+The install is editable, so the command picks up new code immediately. Re-run
+`./install.sh --full` as well when a release adds a dependency — it reuses the
+existing venv, so it is cheap to run either way.
+
 ## What it reads
 
 | Evidence | Needs |
