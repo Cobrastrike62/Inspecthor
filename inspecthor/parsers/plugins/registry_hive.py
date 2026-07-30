@@ -289,6 +289,19 @@ class RegistryHiveParser(Parser):
     requires = "dissect.regf"
     install_hint = cap_hint("registry")
 
+    # Registry transaction logs. On Windows 8+ these open with the same 'regf'
+    # base block as a hive, so magic-byte matching claimed them at full confidence
+    # and every KAPE collection produced six "could not open this hive" errors —
+    # noise that teaches the analyst to skip the warnings that matter. dissect.regf
+    # cannot replay them, so any change they hold but the hive has not flushed is
+    # not visible to this parser.
+    _NOT_A_HIVE = (".log", ".log1", ".log2", ".blf")
+
+    def sniff(self, path: Path, header: bytes, kind: str = "") -> float:
+        if path.name.lower().endswith(self._NOT_A_HIVE):
+            return 0.0
+        return super().sniff(path, header, kind)
+
     def dependency_ok(self) -> tuple[bool, str]:
         import importlib.util
         for module in ("dissect.regf", "regipy"):
