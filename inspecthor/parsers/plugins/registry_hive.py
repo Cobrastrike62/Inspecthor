@@ -93,6 +93,30 @@ _SUSPECT_IMAGE = re.compile(
     r"powershell|cmd\.exe\s*/c|rundll32|mshta|regsvr32)", re.I
 )
 
+# RunMRU is the history of what a human typed into Win+R, so its base rate is 'cmd',
+# 'explorer', a drive letter, a UNC share they use. A remote reference AND a
+# proxy-execution binary in the same typed line is the ClickFix / fake-CAPTCHA shape
+# (T1204.004): the victim is talked into pasting a downloader by a web page. Requiring
+# both keeps it precise — a lone URL in Run just opens a browser, and msiexec alone is
+# plausible, but nobody types the pair by hand.
+#
+# Both spellings of the scheme separator on purpose: real samples use 'http:\\host'
+# with backslashes, which is what a Windows path habit produces and what a naive
+# 'http://' check misses.
+_TYPED_REMOTE = re.compile(
+    r"(?:https?|ftps?)://|(?:https?|ftps?):\\\\|\\\\[a-z0-9][a-z0-9._-]*\\", re.I
+)
+_TYPED_PROXY_EXEC = re.compile(
+    r"\b(?:msiexec|mshta|rundll32|regsvr32|certutil|bitsadmin|curl|wget|hh|"
+    r"powershell|pwsh|wscript|cscript|installutil|forfiles|wmic|conhost)\b", re.I
+)
+
+
+def _is_pasted_lure(text: str) -> bool:
+    """A typed command that reaches out to a remote host via a proxy-exec binary."""
+    return bool(_TYPED_REMOTE.search(text) and _TYPED_PROXY_EXEC.search(text))
+
+
 _MAX_SUBKEYS = 2000        # a Services or USBSTOR tree can be large
 _MAX_VALUE_TEXT = 1000
 _ROT13 = "rot13"
@@ -410,6 +434,7 @@ class RegistryHiveParser(Parser):
             data = {"key": keypath, "name": name, "value": text}
             local_attck = list(attck)
             local_sev = severity
+            local_tags: list[str] = []
 
             if event_type == "system_timezone":
                 if name.lower() in ("activetimebias", "bias"):
@@ -422,6 +447,14 @@ class RegistryHiveParser(Parser):
             elif event_type == "autostart_run_key" and _SUSPECT_IMAGE.search(text):
                 data["suspicious"] = True
                 local_sev = "high"
+            elif event_type == "run_mru" and _is_pasted_lure(text):
+                # Left at 'med' this sits among tens of thousands of routine rows,
+                # which for the best single indicator in a collection is the same
+                # failure as not reporting it.
+                data["suspicious"] = True
+                local_sev = "high"
+                local_tags = ["pasted_command", "suspicious"]
+                local_attck = local_attck + ["T1204.004"]
             elif event_type == "defender_exclusion":
                 local_sev = "high"
 
@@ -435,6 +468,7 @@ class RegistryHiveParser(Parser):
                 data=data,
                 attck=local_attck,
                 severity=local_sev,
+                tags=local_tags,
                 **common,
             )
 
