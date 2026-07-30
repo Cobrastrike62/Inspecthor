@@ -223,6 +223,23 @@ different keys depending on the parser — a command line is `cmdline` from EVTX
 Ranking is by how unambiguous the evidence is: one distinct value scores higher
 than one of forty. Nothing is ever submitted.
 
+A registry key holds several values and usually only one of them is the answer, so
+`value_names` restricts which may answer, best first — `TimeZoneInformation` also
+carries `StandardName` and `DaylightName`, unresolved MUI references on a real host,
+and the `ComputerName` key has a `(Default)` value that held `mnmsrvc`. Without that
+restriction the tool offered `@tzres.dll,-161` as the timezone and `mnmsrvc` as the
+hostname, both at the same confidence as the truth, and the real timezone answer was
+pushed off the end of the list.
+
+`exclude` drops values that are never the answer whatever the tally says. Loopback is
+the case that matters: 61 local logons from `::1` outvoted 2 real remote failures
+under `prefer="most_common"`, so the attacker's IP was reported as the victim's own
+machine at 0.70.
+
+The rule behind both: **a confident wrong answer is worse than no answer.** The
+analyst has nothing to tell it apart from a right one, which is the same reasoning
+that closed the `_family()` fallback above.
+
 ## Not here on purpose
 
 - **No interactive REPL.** Four commands, one of which does everything.

@@ -179,7 +179,8 @@ existing venv, so it is cheap to run either way.
 | **KAPE collections** and disk images — VHDX, VHD, E01, VMDK, QCOW2 | `--full` |
 
 Not yet: `$MFT`/`$J`, prefetch, LNK, SRUM, browser history, PCAP, memory, cloud
-logs. Those are the next parsers.
+logs. Those are the next parsers. Registry transaction logs (`.LOG1`/`.LOG2`) are
+skipped rather than replayed, so a change a hive has not yet flushed is not visible.
 
 ### KAPE collections
 

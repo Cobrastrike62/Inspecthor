@@ -84,12 +84,30 @@ class AnswerRule:
     event_types: tuple[str, ...] = ()           # event_type values to search
     severity: str | None = None
     confidence: float = 0.6
-    prefer: str = "first"                       # 'first'|'last'|'most_common'
+    prefer: str = "first"                       # 'first'|'last'|'most_common'|'given'
     require_keywords: tuple[str, ...] = ()      # extra words that must appear
+
+    # Registry value names allowed to answer, best first. A registry key holds
+    # several values and only some of them are the answer: TimeZoneInformation
+    # also carries StandardName and DaylightName, which on a real host are
+    # unresolved MUI references ('@tzres.dll,-162'). Without this the tool offered
+    # one of those as the timezone and pushed the real answer, 'Central Standard
+    # Time', off the end of the list. Use with prefer='given'.
+    value_names: tuple[str, ...] = ()
+
+    # Formatted values that are never the answer, however often they appear.
+    exclude: frozenset[str] = frozenset()
 
 
 def _c(pattern: str) -> re.Pattern:
     return re.compile(pattern, re.I)
+
+
+# Loopback and the unspecified address are where a *local* logon comes from. A real
+# collection had 61 successful logons from '::1', which normalize_ip renders as
+# 127.0.0.1, and the tool offered it as the attacker's source IP at 0.70 — a
+# confident false lead pointing at the victim's own machine.
+_NOT_A_REMOTE_IP = frozenset({"127.0.0.1", "::1", "0.0.0.0", "::", "-", "localhost"})
 
 
 ANSWER_RULES: tuple[AnswerRule, ...] = (
@@ -100,7 +118,7 @@ ANSWER_RULES: tuple[AnswerRule, ...] = (
         field=("source_ip", "ip_address"), formatter=fmt_plain,
         event_types=("logon_failed", "ssh_failed_login", "ssh_invalid_user",
                      "ssh_login_success", "logon_success", "rdp_connection"),
-        confidence=0.8, prefer="most_common",
+        confidence=0.8, prefer="most_common", exclude=_NOT_A_REMOTE_IP,
     ),
     AnswerRule(
         label="Compromised account",
@@ -216,16 +234,23 @@ ANSWER_RULES: tuple[AnswerRule, ...] = (
                   _c(r"computer name")),
         field="value", formatter=fmt_plain,
         event_types=("computer_name",),
-        confidence=0.85, prefer="first",
+        # The ComputerName key also has a (Default) value, which on a real host
+        # held 'mnmsrvc'. Offered at the same confidence as the true hostname, it
+        # is indistinguishable from it.
+        value_names=("ComputerName",),
+        confidence=0.85, prefer="given",
     ),
     AnswerRule(
         label="System timezone",
         patterns=(_c(r"time ?zone"), _c(r"utc offset")),
-        # utc_offset first: 'value' holds the raw bias ('360') or a resource
-        # string ('@tzres.dll,-161'), neither of which answers the question.
-        field=("utc_offset", "time_zone_key_name", "value"), formatter=fmt_plain,
+        # The zone name answers the question; the biases are the next best thing.
+        # ActiveTimeBias before Bias because it accounts for DST — on a real host
+        # they read UTC-05:00 and UTC-06:00 respectively, and only the first was
+        # true on the day the evidence was collected.
+        field=("utc_offset", "value"), formatter=fmt_plain,
         event_types=("system_timezone",),
-        confidence=0.85, prefer="first",
+        value_names=("TimeZoneKeyName", "ActiveTimeBias", "Bias"),
+        confidence=0.85, prefer="given",
     ),
     AnswerRule(
         label="USB device",
@@ -342,6 +367,20 @@ def _rows_for(store, rule: AnswerRule) -> list[dict]:
                 continue
             seen_ids.add(row_id)
             rows.append(row)
+
+    if rule.value_names:
+        rank = {name.lower(): i for i, name in enumerate(rule.value_names)}
+
+        def _name(row: dict) -> str:
+            data = row.get("data") or {}
+            return str(data.get("name") or "").lower() if isinstance(data, dict) else ""
+
+        rows = [row for row in rows if _name(row) in rank]
+        # Value-name priority outranks time: these keys hold one fact each, so the
+        # question is which value holds it, not which was written first.
+        rows.sort(key=lambda r: (rank[_name(r)], str(r.get("ts") or ""), int(r.get("id", 0))))
+        return rows
+
     rows.sort(key=lambda r: (str(r.get("ts") or ""), int(r.get("id", 0))))
     return rows
 
@@ -366,13 +405,18 @@ def answer_question(store, question: str, limit: int = 5) -> list[Candidate]:
                 continue
             if not formatted:
                 continue
+            if formatted.strip().lower() in rule.exclude:
+                continue
             count, first = tally.get(formatted, (0, row))
             tally[formatted] = (count + 1, first)
 
         if not tally:
             continue
 
-        if rule.prefer == "most_common":
+        if rule.prefer == "given":
+            # _rows_for already ordered these; dicts keep insertion order.
+            ordered = list(tally.items())
+        elif rule.prefer == "most_common":
             ordered = sorted(tally.items(), key=lambda kv: (-kv[1][0], kv[0]))
         elif rule.prefer == "last":
             ordered = sorted(tally.items(), key=lambda kv: str(kv[1][1].get("ts")), reverse=True)

@@ -67,14 +67,57 @@ coverage rather than left to look like an absence of activity.
 - `inspecthor timeline` takes `--min-level` and always states what it filtered out.
   Replaces a two-query severity splice that could return fewer rows than `--limit`
   and re-sorted in Python.
-- The timezone answer returned `360` and `@tzres.dll,-161` — raw registry values.
-  It now prefers the decoded offset.
+
+**Five confidently wrong answers**
+
+Making the timeline readable also made the answer layer legible enough to audit, and
+it was wrong in five places on the same collection. All five share one shape: a
+registry key holds several values, only one is the answer, and the tool took
+whichever the store returned first. A wrong answer at 0.75 is worse than no answer —
+nothing distinguishes it from a right one.
+
+- **Hostname was `mnmsrvc`.** The `ComputerName` key also has a `(Default)` value,
+  which held that, and it sorted first. Not just one bad candidate: `infer` took the
+  same row, so every run reported `mnmsrvc` as the machine the evidence came from.
+  Now `OKIMV1`, and the hostname answer went 0.75 -> 0.85 with the tie gone.
+- **Timezone was `@tzres.dll,-161`** — an unresolved MUI resource reference, offered
+  at the same 0.44 as a real value. Worse, it and its sibling pushed the actual
+  answer, `Central Standard Time`, off the end of the list. `AnswerRule.value_names`
+  now restricts which registry value names may answer, best first.
+- **The inferred timezone was an hour out, under a source label naming a value it
+  had not read.** `Bias` (UTC-06:00) and `ActiveTimeBias` (UTC-05:00) live in that
+  same key; the loop returned on whichever came first and labelled it
+  `registry ActiveTimeBias` either way. Only `ActiveTimeBias` includes the DST shift
+  in force when the evidence was collected, and this offset is what every
+  yearless-syslog timestamp is interpreted against. The source string exists so an
+  analyst can catch exactly this, and it was the thing lying.
+- **The attacker's IP was `127.0.0.1`.** 61 successful logons from `::1`, which
+  `normalize_ip` renders as loopback, outvoted 2 real remote failures under
+  `prefer="most_common"`. Loopback and the unspecified address are excluded; the
+  answer is now the remote address that was actually there.
+- **Registry transaction logs produced six errors every run.** On Windows 8+ a
+  `.LOG1`/`.LOG2` opens with the same `regf` base block as a hive, so magic-byte
+  matching claimed them at full confidence and each one failed. Skipped by name —
+  noise in the warning channel teaches the analyst to ignore the warnings that
+  matter. dissect.regf cannot replay them, so unflushed hive changes stay invisible.
 
 Verified on the real 2.1 GB KAPE VHDX: 797,969 events, **zero rows with an empty
-Details**, zero untitled rows in the triage file, Security 93.9% and PowerShell
-99.6% titled.
+Details** in either file, zero `(no template)` titles in the triage file, Security
+93.9% and PowerShell 99.6% titled. Details run a median of 110 characters in triage
+and 346 across the full timeline.
 
-Tests 130 -> 157.
+59.5% of the full timeline is still `(no template)`, and it says so — 29,826 of those
+are a single unmapped id, `SentinelOne/Operational` 131. That number is the honest
+measure of how much work is left, and before this release there was no way to ask
+for it.
+
+The case file is 1.9 GB for 798k events, heavier than the ~800 MB the design
+estimated. Dropping `data` from the FTS index cut that index from 246 MB to 164 MB,
+but populating `title`/`details`/`extra_fields` on every row more than spent the
+saving: the `events` table alone is 1.6 GB. Readability was worth it; the storage
+shape is not solved.
+
+Tests 130 -> 171.
 
 ## v0.4.0 — KAPE collections
 

@@ -138,6 +138,7 @@ def timezone_from_events(store) -> tuple[Optional[tzinfo], str]:
 
     rows = store.query_events(EventFilter(event_type="system_timezone"))
     named: tuple[Optional[tzinfo], str] = (None, "")
+    biases: dict[str, str] = {}
 
     for row in rows:
         data = row.get("data") or {}
@@ -146,14 +147,7 @@ def timezone_from_events(store) -> tuple[Optional[tzinfo], str]:
         offset_text = str(data.get("utc_offset") or "")
 
         if name in ("activetimebias", "bias") and offset_text:
-            match = _RE_OFFSET.match(offset_text)
-            if match:
-                sign = 1 if match.group(1) == "+" else -1
-                minutes = int(match.group(2)) * 60 + int(match.group(3))
-                return (
-                    timezone(sign * timedelta(minutes=minutes)),
-                    f"registry ActiveTimeBias ({offset_text})",
-                )
+            biases[name] = offset_text
 
         if name == "timezonekeyname" and value:
             key = value.strip().rstrip("\x00").lower()
@@ -162,6 +156,28 @@ def timezone_from_events(store) -> tuple[Optional[tzinfo], str]:
                     _tz_from_utc_offset(_WINDOWS_ZONES[key]),
                     f"registry TimeZoneKeyName ({value.strip()})",
                 )
+
+    # ActiveTimeBias, then Bias — collected first rather than taken from whichever
+    # row the store returned first. Both live in the same key and on a real host
+    # they read UTC-05:00 and UTC-06:00: ActiveTimeBias includes the DST shift in
+    # force when the evidence was collected, Bias does not. Returning Bias under
+    # the label "registry ActiveTimeBias" put every inferred syslog timestamp an
+    # hour out and misnamed the source string that exists to catch exactly that.
+    for name in ("activetimebias", "bias"):
+        offset_text = biases.get(name)
+        if not offset_text:
+            continue
+        match = _RE_OFFSET.match(offset_text)
+        if not match:
+            continue
+        sign = 1 if match.group(1) == "+" else -1
+        minutes = int(match.group(2)) * 60 + int(match.group(3))
+        label = ("ActiveTimeBias" if name == "activetimebias"
+                 else "Bias, standard time with no DST adjustment")
+        return (
+            timezone(sign * timedelta(minutes=minutes)),
+            f"registry {label} ({offset_text})",
+        )
     return named
 
 
@@ -171,6 +187,11 @@ def host_from_events(store) -> tuple[str, str]:
 
     for row in store.query_events(EventFilter(event_type="computer_name")):
         data = row.get("data") or {}
+        # Only the value actually named ComputerName. The key also carries a
+        # (Default) value, which on a real collection held 'mnmsrvc' — and because
+        # it sorted first, every run reported that as the hostname of the machine.
+        if str(data.get("name") or "").lower() != "computername":
+            continue
         value = str(data.get("value") or "").strip().rstrip("\x00")
         if value:
             return value, "registry ComputerName"
