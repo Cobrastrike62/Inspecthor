@@ -34,6 +34,45 @@ microseconds for sorting. `(ts_epoch, id)` is the canonical order, so "the *firs
 such event" is answerable — which matters because half the Sherlock questions are
 phrased that way.
 
+## An event has to say what happened
+
+`title` is the noun phrase, `details` is the evidence, `extra_fields` is whatever
+the template did not claim. That split exists because the alternative was measured:
+one `message` string, 418,514 rows of which read `windows event` and nothing more.
+
+The cause was a capture allow-list. `evtx.py` read every field out of each record
+and kept 25 names, then built its message from a second hardcoded list of ten. Real
+evidence has 200+ providers, so for most of them the parser did the work and threw
+the result away. **A parser must never discard a field it already parsed** — bound
+it (`_MAX_DATA_KEYS`, `_MAX_VALUE_CHARS`) and mark `_truncated`, but do not filter
+by name.
+
+`details.py` renders in three tiers and `build_details` asserts that none of them
+returns empty:
+
+1. a curated `EVENT_TEMPLATES` entry — labels chosen by a human
+2. no template — every field, labelled with its **raw Windows name**
+3. no fields at all — provenance and the reason, never a bare noun
+
+Tier 2's raw labels are deliberate, not a shortcut. The label style is how the
+analyst tells the two apart: `TgtUser:` means the tool understood the event,
+`TargetUserName:` means it is only transcribing one. A tool that dresses tier 2 up
+as tier 1 is claiming coverage it does not have.
+
+The separator is `¦` (U+00A6), not `|`, because `markdown_report` escapes pipes and
+would put a backslash in every row of the writeup.
+
+Levels are `crit/high/med/low/info`, with `sev_rank` denormalized so a min-level
+filter is indexable. Five, not three, because `low` (recognized and routine) and
+`info` (noise or unrecognized) answer different questions — `count(level > info)` is
+a free measure of how much was actually understood. The three older names kept their
+spellings so every existing filter and test survived the change.
+
+Only `EVTX_MAP` may assign `high` or `crit`. `EVENT_TEMPLATES` is researched rather
+than reviewed, and it carries 74 entries marked high or critical; applying those
+verbatim is the same mistake as the `_family()` fallback below, so
+`_RESEARCH_TO_LEVEL` caps the whole table at `med`.
+
 ## Two-pass ingest, and why
 
 Classic syslog records neither the year nor the UTC offset. Asking the analyst for
@@ -123,6 +162,27 @@ Queries are parameterized, always. Filter values come out of the evidence —
 usernames, paths, hostnames found inside artifacts — so interpolation would be an
 injection path from the artifacts themselves.
 
+The FTS index covers `message`, `extra_fields` and `raw`, deliberately **not**
+`data`. `data` is a JSON re-encoding of text those three already cover, and
+indexing it cost 336 MB of duplicate index on one real case.
+
+There are two CSV exports, not one filtered one:
+
+- `<case>-triage.csv` at `min_severity="med"` — what gets opened
+- `<case>-timeline.csv` — everything
+
+Filtering a file named `timeline.csv` would be the more elegant design and the wrong
+one. An analyst greps that file expecting it to be complete; if it silently omits
+`low` and `info` they find nothing and conclude the activity never happened. On the
+real KAPE case the two files are 31,362 and 797,969 rows, which is exactly why
+neither one alone works. Export streams rather than materializing rows, and the raw
+`data` JSON is not a CSV column — Excel truncates a cell at 32,767 characters, and
+losslessness lives in the JSONL export and the database.
+
+`coverage()` and `top_unrecognized()` back a per-channel recognition rate printed
+every run. A channel at 0% is a missing template, and saying so is the difference
+between a coverage gap and an apparent absence of activity.
+
 ## Hostile input
 
 Sherlock packages and real incident evidence contain zip bombs, traversal paths,
@@ -182,3 +242,8 @@ Each is one file in `parsers/plugins/`.
 Prefetch and LNK are the highest-value next two: a KAPE collection is largely
 made of them (516 and 477 files in the one measured), and today they are
 extracted-and-skipped rather than parsed.
+
+Templates are the other axis, and the coverage block says where to spend the
+effort — it ranks the unrecognized event IDs by volume, so the next template to
+write is the top line of it rather than a guess. `SentinelOne/Operational`,
+`StorageManagement`, `Application` and `SmbClient` measured 0.0% on the real case.
