@@ -383,6 +383,37 @@ class CaseStore:
                 tally[tid] = tally.get(tid, 0) + 1
         return sorted(tally.items(), key=lambda kv: (-kv[1], kv[0]))
 
+    def apply_rarity(self, updates: list[tuple[int, str, list[str], str]]) -> int:
+        """Write back rarity promotions: (event id, level, merged tags, merged why).
+
+        A post-ingest UPDATE rather than a parse-time decision, because "has this host
+        ever done this before" cannot be answered until the whole host has been read.
+
+        The caller supplies already-merged tags and reasons. Merging here in SQL was
+        the first attempt and was wrong: ``json_patch`` replaces arrays rather than
+        appending to them, so it silently discarded the path scorer's tags. The caller
+        holds the row anyway, so it can merge in Python where the semantics are plain.
+        """
+        from ..models import level_rank
+
+        payload = [
+            (level, level_rank(level), json.dumps(tags), why[:600], event_id)
+            for event_id, level, tags, why in updates
+        ]
+        self.conn.executemany(
+            """
+            UPDATE events SET
+                severity = ?,
+                sev_rank = ?,
+                tags     = ?,
+                data     = json_set(COALESCE(data, '{}'), '$.why', ?)
+            WHERE id = ?
+            """,
+            payload,
+        )
+        self.conn.commit()
+        return len(payload)
+
     def level_counts(self) -> dict[str, int]:
         """Events per level, so a filtered view can always state what it hid."""
         rows = self.conn.execute(
