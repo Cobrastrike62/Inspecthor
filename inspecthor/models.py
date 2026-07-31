@@ -45,6 +45,12 @@ def level_rank(level: str) -> int:
     return LEVEL_RANK.get(str(level or "info"), 0)
 
 
+def _pretty_event_type(event_type: object) -> str:
+    """'autostart_run_key' -> 'Autostart run key'. The last-resort Title."""
+    text = str(event_type or "").replace("_", " ").strip()
+    return text[:1].upper() + text[1:] if text else "Event"
+
+
 def to_utc(value: datetime, assume: tzinfo = timezone.utc) -> datetime:
     """Return a tz-aware UTC datetime.
 
@@ -192,6 +198,16 @@ class ParseContext:
         # the searchable text is exactly those two joined.
         if not message and (title or details):
             message = " ¦ ".join(p for p in (title, details) if p)
+
+        # Every event gets a Title and Details, whoever produced it. Only the EVTX
+        # parser set these, so on a real case 3,723 registry and text rows rendered
+        # with both columns blank — including 8 autoruns sitting at 'high'. A blank
+        # cell in the two columns an analyst actually reads is indistinguishable from
+        # no evidence, so the fallbacks live here rather than in each parser.
+        if not title:
+            title = _pretty_event_type(event_type)
+        if not details and message:
+            details = message.split(" ¦ ", 1)[-1] if " ¦ " in message else message
         return Event(
             timestamp=to_utc(timestamp, self.tz),
             timestamp_desc=timestamp_desc,

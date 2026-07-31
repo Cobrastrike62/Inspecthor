@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from ... import details as details_mod
+from ... import score
 from ...capabilities import hint as cap_hint
 from ...models import LEVEL_RANK, Event, ParseContext
 from ..base import Parser, register
@@ -449,9 +450,21 @@ class EvtxParser(Parser):
             data["suspicious_cmdline"] = True
 
         tags: list[str] = []
+
+        # Where code lives and what it does, not what it is called. _escalate above
+        # is a LOLBin blocklist; it matched nothing in a confirmed intrusion whose
+        # implant shipped its own node.exe. score.py asks the questions that did
+        # separate that chain from the noise, and can also LOWER the OS's own churn
+        # out of a 'high' tier that was otherwise 100% false positives.
+        severity, tags, attck, reasons = self._score(
+            event_type, data, cmdline, severity, tags, attck,
+        )
+        if reasons:
+            data["why"] = score.summarize(reasons)
+
         if data.get("logon_type") == "10":
             tags.append("rdp")
-        if event_type == "process_created" and severity == "high":
+        if event_type == "process_created" and LEVEL_RANK.get(severity, 0) >= LEVEL_RANK["high"]:
             tags.append("suspicious")
         if not template:
             # The machine-readable counterpart to "(no template)" in the title, so
@@ -479,6 +492,40 @@ class EvtxParser(Parser):
             artifact_path=str(path),
             parser=self.name,
         )
+
+    @staticmethod
+    def _score(event_type: str, data: dict, cmdline: str, severity: str,
+               tags: list[str], attck: list[str]) -> tuple[str, list[str], list[str], list[str]]:
+        """Apply path/behaviour scoring for the event types where it changes the answer.
+
+        Split out so the scoring rules are testable against a plain dict and the
+        3-line dispatch here cannot drift from them.
+        """
+        reasons: list[str] = []
+
+        if event_type == "process_created":
+            image = str(data.get("new_process_name") or data.get("image") or "")
+            parent = str(data.get("parent_process_name") or data.get("parent_image")
+                         or data.get("creator_process_name") or "")
+            severity, new_tags, new_attck, reasons = score.score_process(
+                image, cmdline, parent, base=severity,
+            )
+            tags = tags + [t for t in new_tags if t not in tags]
+            attck = attck + [a for a in new_attck if a not in attck]
+
+        elif event_type == "service_installed":
+            name = str(data.get("service_name") or data.get("name") or "")
+            image = str(data.get("service_file_name") or data.get("image_path") or "")
+            severity, new_tags, reasons = score.score_service(name, image, base=severity)
+            tags = tags + [t for t in new_tags if t not in tags]
+
+        elif event_type == "scheduled_task_created":
+            name = str(data.get("task_name") or data.get("name") or "")
+            xml = str(data.get("task_content") or data.get("xml") or "")
+            severity, new_tags, reasons = score.score_task(name, xml, base=severity)
+            tags = tags + [t for t in new_tags if t not in tags]
+
+        return severity, tags, attck, reasons
 
     @staticmethod
     def _capture(record: dict) -> dict[str, Any]:

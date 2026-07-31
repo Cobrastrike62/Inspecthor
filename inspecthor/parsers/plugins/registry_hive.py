@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+from ... import score
 from ...capabilities import hint as cap_hint
 from ...models import Event, ParseContext
 from ..base import Parser, register
@@ -444,9 +445,21 @@ class RegistryHiveParser(Parser):
             elif event_type == "userassist_exec":
                 display_name = _userassist_name(name)
                 data["program"] = display_name
-            elif event_type == "autostart_run_key" and _SUSPECT_IMAGE.search(text):
-                data["suspicious"] = True
-                local_sev = "high"
+            elif event_type == "autostart_run_key":
+                # Was unconditionally 'high'. On a real collection that made
+                # SecurityHealth, the Realtek audio tray and SentinelOne's own UI
+                # into 8 of the day's 41 high findings, none of them real.
+                local_sev, run_tags, run_why = score.score_autorun(
+                    name, text, base=local_sev,
+                )
+                if _SUSPECT_IMAGE.search(text) and local_sev != "crit":
+                    local_sev = "high"
+                    run_why = list(run_why) + ["target is a script, temp path or bare shell"]
+                local_tags = list(run_tags)
+                if run_why:
+                    data["why"] = score.summarize(run_why)
+                if local_sev in ("high", "crit"):
+                    data["suspicious"] = True
             elif event_type == "run_mru" and _is_pasted_lure(text):
                 # Left at 'med' this sits among tens of thousands of routine rows,
                 # which for the best single indicator in a collection is the same
