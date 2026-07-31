@@ -17,7 +17,7 @@ from datetime import timezone, tzinfo
 from pathlib import Path
 from typing import Callable, Optional
 
-from . import infer, reporter
+from . import infer, rarity, reporter
 from .attack import AttackDB
 from .engine import Engine, open_evidence
 from .infer import Context
@@ -60,6 +60,7 @@ class Result:
     coverage: list[dict] = field(default_factory=list)
     unrecognized: list[dict] = field(default_factory=list)
     level_counts: dict = field(default_factory=dict)
+    rarity: rarity.Findings = field(default_factory=rarity.Findings)
     notable_total: int = 0          # high+med count, so the CLI can say what it hides
     hints: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -265,6 +266,12 @@ def analyze(
                     context.host, context.host_source = found, source_label
 
         result.event_count = store.count_events()
+
+        # ---- what this host has never done before ----
+        # After ingest on purpose: every other signal in the tool encodes an attack
+        # somebody already described, and this one only needs the host's own history.
+        step("profiling what is rare on this host")
+        result.rarity = rarity.apply(store)
 
         # ---- detections ----
         if detect:
