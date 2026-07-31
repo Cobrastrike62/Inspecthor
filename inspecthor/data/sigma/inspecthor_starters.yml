@@ -9,15 +9,24 @@
 title: Audit Log Cleared
 id: 9f1c2b64-0001-4a0e-9f2a-1a2b3c4d5e01
 status: stable
-description: The security or system event log was cleared, a common anti-forensics step.
+description: |
+    The security or system event log was cleared, a common anti-forensics step.
+
+    Both event ids MUST be qualified by provider. 104 and 1102 are not reserved:
+    on one real workstation this rule fired 205 times, every hit a Win32PnpWatcher
+    PnP notification, because 215 distinct providers use 104 for their own purposes.
+    That is the same mistake the EVTX family fallback made -- see DESIGN.md -- and
+    an unqualified id here reintroduces it from the rule side.
 logsource:
     product: windows
 detection:
-    selection:
-        EventID:
-            - '1102'
-            - '104'
-    condition: selection
+    security_log:
+        Provider_Name: 'Microsoft-Windows-Eventlog'
+        EventID: '1102'
+    system_log:
+        Provider_Name: 'Microsoft-Windows-Eventlog'
+        EventID: '104'
+    condition: security_log or system_log
 level: high
 tags:
     - attack.t1070.001
