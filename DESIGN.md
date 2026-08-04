@@ -131,6 +131,52 @@ analyst to ignore the tool. So the families are closed sets, `_SYSTEM_PROVIDERS`
 lists who legitimately owns the System-channel IDs, and unmapped providers get a
 neutral `windows_event` label with their channel preserved in `data`.
 
+## A collector takes everything; not all of it is evidence
+
+`evidence.py` answers one question: could an intruder's trace be in this file?
+
+A UAC run over one Ubuntu host produced 4,171 files of which **3,183 were "parsed"** —
+nearly all `/etc/apparmor.d/abstractions/*`, `/etc/alternatives/README` and XML
+schemas, each turned into a one-event row by the text parser.
+
+Skipping `/etc` wholesale would have been wrong, and the case that prompted this proves
+it: the entire answer was a commented-out `#security:` line in `/etc/mongod.conf`.
+Configuration *is* evidence. The workable distinction is whether a change would be
+visible against the package baseline — `/usr/lib/systemd/system` ships identically on
+every host, `/etc/systemd/system` is where an attacker drops a unit.
+
+Evidence outranks noise unconditionally. `/etc/apparmor.d/local/usr.sbin.sshd` is
+noise; `/etc/ssh/sshd_config` is not, though both are configuration under a noisy
+directory.
+
+**One definition, two consumers.** The parser that would otherwise consume these files
+and the reporter that would otherwise list them import the same predicate. They briefly
+had separate copies, and the reporter's listed `/etc/cron.d/` as noise — which would
+have hidden cron persistence. Two copies of a judgement drift, and the drift shows up
+as a file quietly parsed one way and reported another.
+
+## Aggregate the flood, not its droplets
+
+Three parsers now face the same shape, and it is worth naming because getting it wrong
+is the failure this project keeps repeating.
+
+A MongoDB log held 37,630 `Connection accepted` records from one address in 74 seconds —
+75,260 of 75,597 records were connection churn. The finding is the burst; no single
+connection is one. So connections are emitted at `info` for timeline completeness and
+the flood becomes **one** `high` event carrying the rate. Rating each connection would
+bury the finding under its own evidence, which is exactly how a `high` tier of 41 events
+came to be 41 false positives.
+
+The same reasoning drives `rarity.py`'s burst detection and the registry parser's
+handling of RunMRU. **Emit the components at `info`; synthesize the finding once.**
+
+A bodyfile is the inverse case and gets the opposite treatment. It is mostly the
+operating system, so almost everything stays `info` — but nothing is filtered out,
+because `timeline.csv` is complete by contract. Volume is managed by *grouping the four
+MACB timestamps by value* rather than by dropping rows: one event per distinct time
+instead of four per entry, which on 145,000 entries is the difference between ~290,000
+rows and 580,000 of which three quarters are duplicates.
+
 ## Parser contract
 
 `sniff -> parse -> yield`, and that is all. See `parsers/base.py`.
@@ -259,6 +305,19 @@ Each is one file in `parsers/plugins/`.
 Prefetch and LNK are the highest-value next two: a KAPE collection is largely
 made of them (516 and 477 files in the one measured), and today they are
 extracted-and-skipped rather than parsed.
+
+On the Linux side, `wtmp`/`btmp`/`lastlog` and systemd journals are the gap. Both are
+binary formats and both answer "who logged in", which currently has to come from
+`auth.log` alone.
+
+**Validation is the standing debt.** Every measurement in this file except the UAC
+numbers comes from one Windows collection whose heuristics were tuned against it, with
+the incident time supplied. `tests/test_score.py` asserts that incident's literal strings
+and is a regression guard, not evidence. The one held-out test so far — a Linux Sherlock
+nobody had finished — found two real misconfigurations unprompted, and also exposed that
+three of the four "fixes" made for it were treating symptoms. That ratio is the argument
+for scoring against HTB Sherlocks with published answers and Atomic Red Team's command
+corpus, neither of which this has been run against.
 
 Templates are the other axis, and the coverage block says where to spend the
 effort — it ranks the unrecognized event IDs by volume, so the next template to
