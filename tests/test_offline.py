@@ -432,8 +432,21 @@ def test_suspicious_sudo_command_escalates(case: CaseStore):
 
 
 def test_generic_text_parses_clf_timestamps(case: CaseStore):
-    rows = case.query_events(EventFilter(source_artifact="generic_text"))
+    # source_artifact names the log now ('text/access.log') rather than the parser,
+    # so a whole UAC collection is not one indistinguishable 'generic_text' bucket.
+    rows = case.query_events(EventFilter(source_artifact="text/access.log"))
     assert any(r["ts"] == "2024-03-01 09:20:00" for r in rows)
+
+
+def test_text_logs_are_distinguishable_by_source(case: CaseStore):
+    """The reported failure: every text log arrived as one shared source, so a row
+    gave no clue which service produced it."""
+    sources = {
+        r["source_artifact"] for r in case.query_events(EventFilter())
+        if str(r["source_artifact"]).startswith("text/")
+    }
+    assert "generic_text" not in sources
+    assert len(sources) >= 2, sources
 
 
 def test_untimestamped_file_still_reaches_the_case(case: CaseStore):

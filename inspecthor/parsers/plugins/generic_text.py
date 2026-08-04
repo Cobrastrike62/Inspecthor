@@ -58,6 +58,79 @@ def _line_ts(line: str) -> datetime | None:
     return None
 
 
+# A UAC or /var/log collection is dozens of unrelated logs, and reporting all of them
+# as "generic_text" makes the timeline unusable: mongod.log, apt/history.log,
+# cloud-init.log and amazon-ssm-agent.log arrive indistinguishable, so a row gives no
+# clue which service produced it. Reported directly — "the logs don't specify their
+# source so it's hard to tell what's what".
+#
+# Matched on the collected path, longest first, because the same basename appears under
+# several services and the directory is what disambiguates.
+_LOG_SOURCES: tuple[tuple[str, str], ...] = (
+    ("/var/log/mongodb/", "mongodb"),
+    ("/var/log/postgresql/", "postgresql"),
+    ("/var/log/mysql/", "mysql"),
+    ("/var/log/redis/", "redis"),
+    ("/var/log/nginx/", "nginx"),
+    ("/var/log/apache2/", "apache"),
+    ("/var/log/httpd/", "apache"),
+    ("/var/log/amazon/ssm/", "amazon-ssm"),
+    ("/var/log/amazon/", "amazon"),
+    ("/var/log/unattended-upgrades/", "unattended-upgrades"),
+    ("/var/log/landscape/", "landscape"),
+    ("/var/log/sysstat/", "sysstat"),
+    ("/var/log/apt/", "apt"),
+    ("/var/log/audit/", "auditd"),
+    ("/var/log/samba/", "samba"),
+    ("/var/log/lxd/", "lxd"),
+    ("/lxd/logs/", "lxd"),
+    ("/var/log/journal/", "systemd-journal"),
+    ("/live_response/process", "uac-live-response/process"),
+    ("/live_response/network", "uac-live-response/network"),
+    ("/live_response/packages", "uac-live-response/packages"),
+    ("/live_response/containers", "uac-live-response/containers"),
+    ("/live_response/hardware", "uac-live-response/hardware"),
+    ("/live_response/storage", "uac-live-response/storage"),
+    ("/live_response/system", "uac-live-response/system"),
+    ("/live_response/", "uac-live-response"),
+    ("/hash_executables/", "uac-hashes"),
+)
+
+# Distinctive filenames, used when the directory says nothing.
+_LOG_STEMS: dict[str, str] = {
+    "cloud-init.log": "cloud-init",
+    "cloud-init-output.log": "cloud-init",
+    "dpkg.log": "dpkg",
+    "alternatives.log": "dpkg-alternatives",
+    "kern.log": "kernel",
+    "dmesg": "kernel",
+    "apport.log": "apport",
+    "ufw.log": "ufw",
+    "fail2ban.log": "fail2ban",
+    "mongod.log": "mongodb",
+    "boot.log": "boot",
+}
+
+
+def source_label(path: Path) -> str:
+    """A source_artifact that names the log, not just its format.
+
+    Returns e.g. ``text/mongodb``, ``text/apt``, ``text/auth.log``. Prefixed with
+    ``text/`` so it is still obvious which parser produced the row, and so existing
+    filters on the parser name keep working.
+    """
+    posix = str(path).replace("\\", "/").lower()
+    for marker, label in _LOG_SOURCES:
+        if marker in posix:
+            return f"text/{label}"
+    named = _LOG_STEMS.get(path.name.lower())
+    if named:
+        return f"text/{named}"
+    # Fall back to the filename itself: still far more use than one shared bucket.
+    stem = path.name or "text"
+    return f"text/{stem[:40]}"
+
+
 @register
 class GenericText(Parser):
     """Timestamped lines become events; untimestamped files become one
@@ -92,7 +165,8 @@ class GenericText(Parser):
             mtime = datetime.now()
 
         common = dict(
-            source_artifact=self.name, artifact_path=str(path), parser=self.name,
+            source_artifact=source_label(path), artifact_path=str(path),
+            parser=self.name,
         )
 
         emitted = 0
