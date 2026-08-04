@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterator
 
+from ...evidence import is_collector_noise
 from ...models import Event, ParseContext
 from .._textio import read_lines
 from ..base import Parser, register
@@ -147,6 +148,13 @@ class GenericText(Parser):
     CONF_KIND = 0.2
 
     def sniff(self, path: Path, header: bytes, kind: str = "") -> float:
+        # A triage collector takes the whole of /etc. On one real UAC collection this
+        # parser claimed ~3,000 files — AppArmor abstractions, XML schemas, systemd
+        # units — and turned each into a one-event row, which is where 80,554 'info'
+        # events and a 109 MB case file came from. Declining them registers the file as
+        # unsupported, so it is still counted and reported, just not in the timeline.
+        if is_collector_noise(path):
+            return 0.0
         if kind in ("text", "syslog"):
             return self.CONF_KIND
         # Printable-ratio heuristic for anything the engine could not label.

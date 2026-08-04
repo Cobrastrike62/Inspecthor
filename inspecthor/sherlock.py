@@ -152,6 +152,21 @@ ANSWER_RULES: tuple[AnswerRule, ...] = (
         confidence=0.85, prefer="first",
     ),
     AnswerRule(
+        label="Misconfiguration that allowed this",
+        # A config finding is a state, not an event, so it never surfaced through the
+        # timeline-shaped rules. On a real case the whole answer was two lines of
+        # mongod.conf and the tool had no way to be asked about it.
+        patterns=(_c(r"what .*(?:vulnerabilit|misconfig|weakness|exposed the)"),
+                  _c(r"how was .*(?:exposed|compromised|accessed)"),
+                  _c(r"why .*(?:unauthenticated|no auth|allowed)"),
+                  _c(r"root cause"), _c(r"initial access vector")),
+        field=("why",), formatter=fmt_plain,
+        event_types=("config_exposed_service", "config_no_auth", "config_sshd_risk",
+                     "config_uid0_account", "config_empty_password",
+                     "config_ld_preload", "config_nopasswd_sudo"),
+        confidence=0.8, prefer="first",
+    ),
+    AnswerRule(
         label="Exposed service port",
         patterns=(_c(r"what port"), _c(r"which port"), _c(r"port .*(?:listen|expos|open)"),
                   _c(r"listening on")),

@@ -20,6 +20,7 @@ from typing import Any, Iterable, Sequence
 from rich.table import Table
 from rich.text import Text
 
+from .evidence import is_collector_noise
 from .models import LEVEL_MARK, LEVEL_RANK, LEVEL_STYLE
 
 # Five levels, from the single definition in models so nothing drifts.
@@ -455,33 +456,12 @@ def markdown_report(store, case_name: str = "", limit: int = 200) -> str:
     return "\n".join(out)
 
 
-# Files a collector sweeps up that were never evidence and never will be. A UAC run
-# produces thousands of these, and listing them individually is how one real report
-# became 994 lines of "— unsupported" that buried the four entries that mattered.
-_NOT_EVIDENCE = (
-    "/etc/alternatives/", "/etc/ssl/certs/", "/usr/share/ca-certificates/",
-    "/etc/rc0.d/", "/etc/rc1.d/", "/etc/rc2.d/", "/etc/rc3.d/", "/etc/rc4.d/",
-    "/etc/rc5.d/", "/etc/rc6.d/", "/etc/rcs.d/", "/etc/apparmor.d/",
-    "/etc/console-setup/", "/etc/dpkg/origins/", "/etc/sgml/", "/etc/newt/",
-    "/usr/lib/systemd/system/", "/lib/systemd/system/", "/etc/systemd/system/",
-    "/etc/apt/trusted.gpg.d/", "/etc/pam.d/", "/etc/logcheck/", "/etc/terminfo/",
-    "/etc/udev/rules.d/", "/etc/init.d/", "/etc/cron.d/", "/etc/ufw/",
-)
-_NOT_EVIDENCE_SUFFIXES = (
-    ".1.gz", ".2.gz", ".3.gz", ".5.gz", ".7.gz", ".8.gz", ".gpg", ".pem", ".crt",
-    ".psf.gz", ".acm.gz", ".kmap.gz", ".efi.signed", ".service", ".target",
-    ".socket", ".mount", ".rules", ".ttf", ".pyc", ".so",
-)
-
-
-def _is_not_evidence(path: str) -> bool:
-    lowered = path.replace("\\", "/").lower()
-    if any(marker in lowered for marker in _NOT_EVIDENCE):
-        return True
-    if lowered.endswith(_NOT_EVIDENCE_SUFFIXES):
-        return True
-    # A bare certificate hash link: /etc/ssl/certs/653b494a.0
-    return bool(re.fullmatch(r".*/[0-9a-f]{8}\.\d", lowered))
+# One definition of "was this ever evidence", shared with the parser that would
+# otherwise consume these files. The first version of this lived here as its own
+# tuple and listed /etc/cron.d/ as noise — which would have hidden a cron persistence
+# entry. Two copies of that judgement drift, and the drift shows up as a file quietly
+# parsed one way and reported another.
+_is_not_evidence = is_collector_noise
 
 
 def _not_parsed_section(skipped: list[dict]) -> list[str]:
