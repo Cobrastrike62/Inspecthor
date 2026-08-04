@@ -11,9 +11,9 @@
 
 [![tests](https://github.com/Cobrastrike62/Inspecthor/actions/workflows/tests.yml/badge.svg)](https://github.com/Cobrastrike62/Inspecthor/actions/workflows/tests.yml)
 
-Forensic triage for Windows and Linux evidence. Point it at a KAPE VHDX, a folder,
-or an HTB Sherlock zip; it parses everything it recognizes, scores what looks
-suspicious, runs Sigma and YARA, and writes a timeline you can read.
+Forensic triage for Windows and Linux evidence. Point it at a KAPE VHDX, a UAC
+collection, a folder, or an HTB Sherlock zip; it parses everything it recognizes,
+scores what looks suspicious, runs Sigma and YARA, and writes a timeline you can read.
 
 > Work in a VM. Sherlock packages and real incident artifacts contain live malware.
 > Only examine evidence you are authorized to examine.
@@ -26,6 +26,7 @@ suspicious, runs Sigma and YARA, and writes a timeline you can read.
 - [Output files](#output-files) · [Reading a row](#reading-a-row) · [Severity levels](#severity-levels)
 - [Commands](#commands) · [Flags](#flags)
 - [KAPE and disk images](#kape-and-disk-images) · [Supported evidence](#supported-evidence)
+- [UAC / Linux triage](#uac--linux-triage-collections) · [Filesystem timelines](#filesystem-timelines)
 - [Your own rules](#your-own-rules) · [Your own parser](#your-own-parser)
 - [Gotchas](#gotchas) · [Performance](#performance)
 
@@ -274,13 +275,71 @@ Also handles VHD, E01, VMDK and QCOW2.
 |---|---|
 | Linux `auth.log`, `secure`, `syslog` — rotated and gzipped included | nothing |
 | Timestamped app logs, Apache/nginx access logs, plain text | nothing |
+| **MongoDB** server logs (`mongod.log`, 4.4+ JSON format) | nothing |
+| **Linux config and accounts** — `mongod.conf`, `sshd_config`, `passwd`, `shadow`, `sudoers`, `authorized_keys`, `cron` | nothing |
+| **Filesystem timelines** — Sleuth Kit / mactime `bodyfile` | nothing |
+| **UAC collections** (Unix-like Artifacts Collector) | nothing |
 | Windows Event Logs — Security, System, PowerShell, Sysmon, Task, RDP, Defender | `--full` |
 | Registry hives — Run keys, services, timezone, USB, UserAssist, amcache | `--full` |
 | KAPE collections and disk images — VHDX, VHD, E01, VMDK, QCOW2 | `--full` |
 
 **Not yet:** `$MFT`/`$J`, prefetch, LNK, SRUM, browser history, PCAP, memory, cloud
-logs. Registry transaction logs (`.LOG1`/`.LOG2`) are skipped rather than replayed,
-so unflushed hive changes are invisible.
+logs, `wtmp`/`btmp`/`lastlog`, systemd journals. Registry transaction logs
+(`.LOG1`/`.LOG2`) are skipped rather than replayed, so unflushed hive changes are
+invisible.
+
+### UAC / Linux triage collections
+
+Point it at the collection directory or its zip:
+
+```bash
+inspecthor uac-hostname-linux-triage.zip --rules ~/sigma-rules
+```
+
+Three things happen that are worth knowing about.
+
+**Logs are named, not lumped.** Every text log used to arrive as `generic_text`, which
+made `mongod.log` indistinguishable from `apt/history.log` in the timeline. Now
+`source_artifact` identifies it — `text/mongodb`, `text/apt`, `text/cloud-init`,
+`text/uac-live-response/process`.
+
+**Configuration is read as evidence.** `mongod.conf`, `sshd_config`, `passwd`, `shadow`,
+`sudoers`, `authorized_keys` and `cron` entries produce findings:
+
+```
+[crit] Service listens on every interface with NO authentication
+       bindIp: 0.0.0.0 ¦ port: 27017 ¦ authorization: not set ¦ security block: commented out
+[crit] sshd: root login permitted WITH password authentication
+[high] Passwordless sudo rule
+```
+
+Comments are parsed, not skipped — a commented-out `#security:` block *is* the finding,
+and it looks identical to a missing one unless you read the comments.
+
+**Collector sweepings are declined.** A UAC run collects the whole of `/etc`, and about
+3,000 of those files are AppArmor abstractions, certificate hash links and gzipped man
+pages. Those are registered and counted but not turned into timeline events. Security-
+relevant config is exempt from that: `/etc/sudoers.d/`, `/etc/cron.d/`,
+`/etc/systemd/system/` and `.ssh/authorized_keys` are always parsed.
+
+### Filesystem timelines
+
+A `bodyfile` is one event per **distinct timestamp**, using mactime's MACB notation:
+
+```
+Timestamp            MACB   Title                     Details
+2025-12-29 05:26:41  m.c.   File modified             MACB: m.c. ¦ Path: /var/lib/mongodb/… ¦ Mode: -rw-------
+2020-09-13 12:26:40  ...b   File created              MACB: ...b ¦ Path: /usr/bin/legit ¦ Mode: -rwxr-xr-x
+```
+
+Most entries sit at `info` — a bodyfile is mostly the operating system. Promoted are
+executables in world-writable directories, SUID binaries outside `/usr/bin`-style paths,
+changes to `/etc/shadow`, `sudoers`, `cron` and `authorized_keys`, and shell-history or
+credential files.
+
+This is where "what did they touch" lives when the application log cannot say. MongoDB,
+for instance, logs no queries by default: its log can prove 37,630 connections happened
+and never what was read.
 
 ## Your own rules
 

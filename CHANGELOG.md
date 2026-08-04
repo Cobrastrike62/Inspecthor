@@ -1,5 +1,161 @@
 # Changelog
 
+## v0.7.0 — Linux triage collections, and the first held-out test
+
+An HTB Sherlock nobody could finish, reported as two problems: *"most of the questions
+were about MongoDB but the logs don't specify their source"*, and a list of files that
+went unparsed. Both were true, and this is the **first validation on evidence the tool
+was not tuned against** — every number in v0.6.0 came from the one collection its
+heuristics were built on.
+
+### Linux triage (UAC) support
+
+**MongoDB server log** — `mongod` 4.4+ writes one JSON object per line. On the case:
+22 MB, 75,597 records, read as anonymous text. The hard part is severity, not parsing:
+75,260 of those records are `Connection accepted`/`Connection ended`, and the finding
+was not any one of them but that **37,630 arrived from one address in 74 seconds**.
+Connections stay at `info`; the flood becomes a single `high` event per source carrying
+the rate. Rating each connection would bury the finding under its own evidence.
+
+**Linux configuration and accounts** — `mongod.conf`, `sshd_config`, `passwd`,
+`shadow`, `sudoers`, `authorized_keys`, `crontab`/`cron.d`, `ld.so.preload`.
+
+That case's entire answer was two lines of `/etc/mongod.conf`, and **comments are parsed
+rather than stripped** because one of them was commented out:
+
+```yaml
+net:
+  bindIp: 0.0.0.0     # every interface
+#security:            # authorization never enabled
+```
+
+`#security:` and an absent `security:` are identical to any normal config reader and
+both mean unauthenticated — but only one tells you it was deliberately disabled.
+Severity tracks *exposure*: `0.0.0.0` with no auth is `crit`, `127.0.0.1` with no auth
+is `high`, `0.0.0.0` with auth is `med`, and a clean file is still emitted at `low`
+because "checked and clean" must not look like "never collected".
+
+**Filesystem timeline (bodyfile)** — Sleuth Kit / mactime format, 13 MB and unparsed on
+the case. It matters there because `mongod` logs no queries: the connection log proves
+37,630 connections happened and cannot say what was read.
+
+One event per **distinct timestamp**, not per file and not per field. Per file loses
+three of the four times, which is most of why a bodyfile exists — a file modified long
+after creation is the interesting case. Per field emits four events for every entry, and
+on 145,000 entries that is 580,000 rows of which three quarters are duplicates, because
+a file written once has identical m/c/b. Grouping by value gives mactime's own MACB
+notation (`...b`, `m.c.`) at roughly two events per entry.
+
+### The logs now say what they are
+
+Every text log landed as `source_artifact=generic_text`, so `mongod.log`,
+`apt/history.log`, `cloud-init.log` and `amazon-ssm-agent.log` were indistinguishable.
+`source_label()` derives identity from the collected path — `text/mongodb`, `text/apt`,
+`text/uac-live-response/process` — and falls back to the filename. **1 source became
+24.**
+
+That change carried a trap. The Sigma router keys on the part of `source_artifact`
+before the first `/`, so leaving the text-category tokens spelled `generic_text` would
+have routed every `webserver`, `proxy`, `dns` and `database` rule to a bucket no event
+lands in. Silently, which reads as a clean host — the same failure as the
+`Image`/`new_process_name` bug in v0.6.0. Tokens are prefixes now, with a test asserting
+it.
+
+### `evidence.py` — is a collected file worth parsing?
+
+A UAC run over one host produced 4,171 files of which **3,183 were "parsed"**, nearly
+all `/etc/apparmor.d/abstractions/*`, `/etc/alternatives/README` and XML schemas, each
+turned into a one-event row.
+
+Skipping `/etc` wholesale would have been wrong: that is where the answer was.
+Configuration *is* evidence. The distinction is whether a change would be visible
+against the package baseline:
+
+| Noise | Evidence |
+|---|---|
+| `/usr/lib/systemd/system/*.service` | `/etc/systemd/system/*.service` |
+| `/etc/apparmor.d/abstractions/*` | `/etc/sudoers.d/*` |
+| `/etc/ssl/certs/653b494a.0` | `/etc/cron.d/*` |
+| gzipped man pages | `.bash_history`, `authorized_keys` |
+
+Evidence wins unconditionally, so `/etc/apparmor.d/local/usr.sbin.sshd` is noise while
+`/etc/ssh/sshd_config` is not. One definition, imported by both the parser that would
+consume these and the reporter that would list them — the reporter's own earlier copy
+had `/etc/cron.d/` marked as noise, which would have hidden cron persistence.
+
+Parsed artifacts 3,183 -> 2,099.
+
+### A report you would actually open
+
+4,467 lines with 996 `— unsupported` entries. **Two sections were each listing
+everything**, so fixing one halved nothing. The Artifacts table now lists what produced
+evidence plus errors; Not parsed groups the rest by type, names the largest with their
+sizes, and counts collector sweepings separately. **4,467 lines -> 499.**
+
+A 13 MB bodyfile is a parser worth writing; a symlink to `vim` is not, and the report
+has to tell them apart.
+
+### Answers
+
+New rules for questions that returned nothing: attacker IP from an aggregated flood at
+0.90, so a synthesized finding outranks raw logon volume — the SSH log held internet
+background brute-force noise that was beating the address which actually attacked the
+service. Plus first-connection time, connection count, exposed port, "what is the
+vulnerability" (a config finding is a *state*, so it never surfaced through
+timeline-shaped rules), and a Linux hostname rule, since the existing one read only
+registry `computer_name` and returned nothing on a host whose every syslog line carried
+the name.
+
+### Measured on the held-out case
+
+Found unprompted, having been given only the evidence:
+
+```
+[crit] config/mongod.conf   listens on every interface with NO authentication
+[crit] config/sshd_config   root login permitted WITH password authentication
+[high] mongodb              Connection flood: 65.0.76.43, 37,630 conns, 74s, 506/s
+```
+
+The `sshd_config` finding was not noticed by hand. 12 crit/high rows total, all real.
+`med` 37 -> 13 after mongod's own startup advice (tcmalloc, hugepages, deprecated
+parameters) moved to `info`.
+
+Bodyfile on the real 99,137-entry file: **284,535 events** (2.87 per entry), 249
+notable, whole collection ingested in **2m53s** including 2,935 Sigma rules.
+
+Four false positives the real data exposed and the fixtures had not:
+
+- **Symlinks are always `lrwxrwxrwx`** and sockets `srwxrwxrwx`, so a mode-only check
+  called `/var/spool/mail -> ../mail` and `/tmp/mongodb-27017.sock` executables in
+  world-writable directories. Only a regular file (`-`) can be an executable.
+- **A snap carries a complete `/etc` inside it.** `/snap/core22/2133/etc/sudoers` and
+  friends were 18 of 22 `med` findings, all noise, and read-only besides.
+- `/usr/share/doc/git/contrib/credential/netrc/test.netrc` matched the credential list.
+  Those names only count inside a home directory.
+
+### Honest limits
+
+- **The bodyfile did not answer "what did they read" on this case, and could not.**
+  It records only the latest timestamp per file, and MongoDB rewrote its data directory
+  at 06:05–06:07 — after the 05:25–05:27 flood — overwriting the evidence. Exactly one
+  filesystem timestamp falls inside the flood window. Filesystem timelines are the right
+  place to look for this; they are not a guarantee of finding it.
+- **The case file grew 106 MB -> 357 MB.** 284,535 bodyfile events is most of a
+  three-fold increase for one 13 MB input.
+- **Config findings have no reliable timestamp.** They are a *state*, not an event.
+  mtime is all that exists, extracting a collection resets it, and on this case that
+  placed every config finding at the extraction date rather than in the incident window.
+  `timestamp_desc` now says `Config file mtime (not the time of the change)`.
+- **`ubuntu ALL=(ALL) NOPASSWD:ALL` is flagged `high`** and is cloud-init's standard rule
+  on every Ubuntu cloud image. A true observation, and a false positive in practice.
+- The noise reduction was smaller than it looks: the case file only went 109 MB -> 106
+  MB, because each skipped file was one event against 75,598 legitimate MongoDB records.
+- Sigma matched **1 of 2,935** rules here. Plausible on a Linux collection where the
+  corpus is overwhelmingly Windows; not verified to be the reason.
+- Still UTC-only output. Still no `wtmp`/`btmp`/`lastlog` or systemd journal parser.
+
+Tests 285 -> 412.
+
 ## v0.6.0 — alerts worth reading, and a real rule corpus
 
 v0.5.0 made the timeline readable. It did not make it *prioritised*, and on a real
