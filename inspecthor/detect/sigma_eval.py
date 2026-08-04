@@ -246,19 +246,27 @@ _FOREIGN_PRODUCTS = frozenset({
 })
 
 
-# Categories that only ever apply to text logs this tool parses with generic_text —
-# Apache/nginx access logs and the like. Measured: 134 of the 185 untargeted rules
-# were 'webserver' or 'proxy', and each was being tested against all 798,000 Windows
-# event rows where it cannot possibly match. Keyed on source_artifact rather than
-# channel, because a text log has no channel.
+# Categories that only ever apply to text logs — Apache/nginx access logs and the
+# like. Measured: 134 of the 185 untargeted rules were 'webserver' or 'proxy', and each
+# was being tested against all 798,000 Windows event rows where it cannot possibly
+# match. Keyed on source_artifact rather than channel, because a text log has no
+# channel.
+#
+# These are matched against the part of source_artifact BEFORE the first '/' (see
+# ``candidates``), so they are prefixes: 'text' covers text/mongodb, text/apt and the
+# rest. Spelling one of them 'generic_text' — the parser's name rather than its source
+# prefix — silently routes the rule to a bucket no event ever lands in, which reads as
+# a clean host.
+_TEXT_SOURCE_PREFIXES = ("text", "linux_syslog", "mongodb")
+
 _TEXT_CATEGORIES: dict[str, tuple[str, ...]] = {
-    "webserver": ("generic_text", "linux_syslog"),
-    "proxy": ("generic_text",),
-    "firewall": ("generic_text",),
-    "dns": ("generic_text", "linux_syslog"),
-    "antivirus": ("generic_text",),
-    "database": ("generic_text",),
-    "application": ("generic_text", "linux_syslog"),
+    "webserver": ("text", "linux_syslog"),
+    "proxy": ("text",),
+    "firewall": ("text", "linux_syslog"),
+    "dns": ("text", "linux_syslog"),
+    "antivirus": ("text",),
+    "database": ("text", "mongodb"),
+    "application": ("text", "linux_syslog"),
 }
 
 
@@ -283,7 +291,7 @@ def _rule_scope(rule: dict) -> tuple[str, frozenset[str], tuple[str, ...]]:
     # A Linux rule cannot match a Windows event log, and testing it against 798,000 of
     # them costs the same as testing one that can.
     if product in ("linux", "macos", "unix") and not service:
-        return "text", frozenset(), ("linux_syslog", "generic_text")
+        return "text", frozenset(), _TEXT_SOURCE_PREFIXES
 
     event_ids = _CATEGORY_EVENT_IDS.get(category, frozenset())
     tokens = _SERVICE_CHANNEL_TOKENS.get(service, ())

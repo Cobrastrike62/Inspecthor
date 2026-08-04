@@ -11,6 +11,7 @@ an import days later.
 from __future__ import annotations
 
 import csv
+import re
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -418,19 +419,129 @@ def markdown_report(store, case_name: str = "", limit: int = 200) -> str:
         ]
         out += [""]
 
-    out += ["## Artifacts", "", "| Kind | Parser | Status | Events | Path |", "|---|---|---|---|---|"]
-    for row in artifacts:
+    # Artifacts that produced evidence, plus anything that errored. The files nothing
+    # could be read from are summarized in "Not parsed" below rather than listed twice:
+    # on a UAC collection this table alone was ~1,000 rows of /etc config files, and a
+    # 4,467-line report is one nobody opens.
+    errored = [a for a in artifacts if a.get("status") == "error"]
+    listed = sorted(
+        parsed + errored,
+        key=lambda a: (-int(a.get("event_count") or 0), str(a.get("path") or "")),
+    )
+    out += [
+        "## Artifacts",
+        "",
+        f"{len(parsed)} parsed, {len(errored)} errored, "
+        f"{len(skipped) - len(errored)} with no parser "
+        "(summarized under Not parsed).",
+        "",
+        "| Kind | Parser | Status | Events | Path |",
+        "|---|---|---|---|---|",
+    ]
+    for row in listed[:limit]:
         out.append(
             f"| {row.get('kind','')} | {row.get('parser') or '-'} | {row.get('status','')} "
             f"| {row.get('event_count',0)} | `{row.get('path','')}` |"
         )
+    if len(listed) > limit:
+        out.append(
+            f"| … | | | | _{len(listed) - limit} more, ordered by event count_ |"
+        )
     out += [""]
 
     if skipped:
-        out += ["### Not parsed", ""]
-        for row in skipped:
-            reason = row.get("error") or row.get("hint") or row.get("status")
-            out.append(f"- `{row.get('path','')}` — {reason}")
-        out += [""]
+        out += _not_parsed_section(skipped)
 
     return "\n".join(out)
+
+
+# Files a collector sweeps up that were never evidence and never will be. A UAC run
+# produces thousands of these, and listing them individually is how one real report
+# became 994 lines of "— unsupported" that buried the four entries that mattered.
+_NOT_EVIDENCE = (
+    "/etc/alternatives/", "/etc/ssl/certs/", "/usr/share/ca-certificates/",
+    "/etc/rc0.d/", "/etc/rc1.d/", "/etc/rc2.d/", "/etc/rc3.d/", "/etc/rc4.d/",
+    "/etc/rc5.d/", "/etc/rc6.d/", "/etc/rcs.d/", "/etc/apparmor.d/",
+    "/etc/console-setup/", "/etc/dpkg/origins/", "/etc/sgml/", "/etc/newt/",
+    "/usr/lib/systemd/system/", "/lib/systemd/system/", "/etc/systemd/system/",
+    "/etc/apt/trusted.gpg.d/", "/etc/pam.d/", "/etc/logcheck/", "/etc/terminfo/",
+    "/etc/udev/rules.d/", "/etc/init.d/", "/etc/cron.d/", "/etc/ufw/",
+)
+_NOT_EVIDENCE_SUFFIXES = (
+    ".1.gz", ".2.gz", ".3.gz", ".5.gz", ".7.gz", ".8.gz", ".gpg", ".pem", ".crt",
+    ".psf.gz", ".acm.gz", ".kmap.gz", ".efi.signed", ".service", ".target",
+    ".socket", ".mount", ".rules", ".ttf", ".pyc", ".so",
+)
+
+
+def _is_not_evidence(path: str) -> bool:
+    lowered = path.replace("\\", "/").lower()
+    if any(marker in lowered for marker in _NOT_EVIDENCE):
+        return True
+    if lowered.endswith(_NOT_EVIDENCE_SUFFIXES):
+        return True
+    # A bare certificate hash link: /etc/ssl/certs/653b494a.0
+    return bool(re.fullmatch(r".*/[0-9a-f]{8}\.\d", lowered))
+
+
+def _not_parsed_section(skipped: list[dict]) -> list[str]:
+    """Group what was not parsed, and separate real gaps from collector sweepings.
+
+    An analyst reading this needs one thing from it: *is there evidence here the tool
+    could not read?* A flat list of every config file and man page answers that
+    question with noise, and a genuine gap — a 13 MB bodyfile, a systemd journal — is
+    indistinguishable from a symlink to ``vim``.
+    """
+    gaps: list[dict] = []
+    sweepings: list[dict] = []
+    for row in skipped:
+        (sweepings if _is_not_evidence(str(row.get("path", ""))) else gaps).append(row)
+
+    out = ["### Not parsed", ""]
+
+    if gaps:
+        by_ext: dict[str, list[dict]] = {}
+        for row in gaps:
+            name = Path(str(row.get("path", ""))).name
+            ext = ("." + name.rsplit(".", 1)[1].lower()) if "." in name else "(no extension)"
+            by_ext.setdefault(ext, []).append(row)
+
+        out += [
+            f"**{len(gaps)} file(s) that may be evidence** — no parser for these yet.",
+            "",
+            "| Type | Count | Largest | Example |",
+            "|---|---|---|---|",
+        ]
+        for ext, rows in sorted(by_ext.items(), key=lambda kv: -len(kv[1])):
+            biggest = max(rows, key=lambda r: int(r.get("size") or 0))
+            size = int(biggest.get("size") or 0)
+            human = f"{size/1e6:.1f} MB" if size >= 1e6 else f"{size/1e3:.0f} KB"
+            out.append(
+                f"| `{ext}` | {len(rows)} | {human} | `{Path(str(biggest.get('path',''))).name}` |"
+            )
+        out += [""]
+
+        # Name the individually large ones: a 13 MB file is worth a parser, and that
+        # judgement needs the size in front of the reader.
+        notable = sorted(gaps, key=lambda r: -int(r.get("size") or 0))[:8]
+        notable = [r for r in notable if int(r.get("size") or 0) > 100_000]
+        if notable:
+            out += ["Largest unparsed files:", ""]
+            for row in notable:
+                size = int(row.get("size") or 0)
+                reason = row.get("error") or row.get("hint") or row.get("status")
+                out.append(
+                    f"- `{Path(str(row.get('path',''))).name}` "
+                    f"({size/1e6:.1f} MB) — {reason}"
+                )
+            out += [""]
+
+    if sweepings:
+        out += [
+            f"**{len(sweepings)} collector sweepings skipped** — symlinks, certificates, "
+            "unit files, man pages and other configuration a triage collector picks up "
+            "wholesale. Not evidence, and not a coverage gap.",
+            "",
+        ]
+
+    return out
