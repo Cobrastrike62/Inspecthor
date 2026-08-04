@@ -52,11 +52,15 @@ def test_real_gaps_are_not_dismissed_as_sweepings(path, _size):
 
 def _case(tmp_path: Path) -> CaseStore:
     store = CaseStore(str(tmp_path / "case.db"), case_name="uac")
-    # 540 sweepings, the order of magnitude a real UAC run produces. Distinct sha256
-    # per row because (path, sha256) is unique and re-registering is idempotent.
+    # 540 sweepings, the order of magnitude a real UAC run produces. Uniqueness comes
+    # from an intermediate directory, not a suffix: appending '.{index}' to the
+    # filename would turn 'mongod.service' into 'mongod.service.7' and defeat every
+    # extension rule, which is a property of the fixture rather than of the code.
     for index, path in enumerate(SWEEPINGS * 60):
+        head, _, tail = path.rpartition("/")
         artifact_id = store.add_artifact(
-            path=f"{path}.{index}", sha256=f"{index:064x}", kind="text", size=2048,
+            path=f"{head}/n{index}/{tail}", sha256=f"{index:064x}", kind="text",
+            size=2048,
         )
         store.set_artifact_status(artifact_id, "unsupported")
     for path, size in REAL_GAPS:
