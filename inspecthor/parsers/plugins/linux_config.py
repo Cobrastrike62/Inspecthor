@@ -33,7 +33,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-from ...evidence import is_evidence_config
 from ...models import Event, ParseContext
 from ..base import Parser, register
 
@@ -439,40 +438,72 @@ class LinuxConfigParser(Parser):
     )
 
     def sniff(self, path: Path, header: bytes, kind: str = "") -> float:
-        return self.CONF_PATH if is_evidence_config(path) else 0.0
+        """Claim only what ``parse`` actually has a handler for.
+
+        CONSTRAINT, learned the hard way: this used to claim everything
+        ``is_evidence_config`` recognized. ``.bash_history`` is on that list, so it won
+        at 0.75 against the generic text parser's 0.2, then fell through to a
+        ``key: value`` reader that found nothing and emitted one ``info`` row. The
+        parser it displaced would have stored a searchable 16 KB preview.
+
+        **A parser that claims a file and produces nothing is worse than no parser**,
+        because it silently removes the fallback that was working. Every specialist here
+        must decline anything it cannot actually read.
+        """
+        return self.CONF_PATH if self.handler_for(path) else 0.0
+
+    @staticmethod
+    def handler_for(path: Path) -> str:
+        """Which handler covers this file, or '' if none does."""
+        posix = str(path).replace("\\", "/").lower()
+        name = path.name.lower()
+        if name in ("mongod.conf", "mongodb.conf", "redis.conf", "postgresql.conf"):
+            return "service"
+        if name == "sshd_config":
+            return "sshd"
+        if name == "passwd":
+            return "passwd"
+        if name == "shadow":
+            return "shadow"
+        if name == "sudoers" or "/sudoers.d/" in posix:
+            return "sudoers"
+        if name.startswith("authorized_keys"):
+            return "authorized_keys"
+        if name == "crontab" or "/cron." in posix or "/spool/cron/" in posix:
+            return "cron"
+        if name == "ld.so.preload":
+            return "preload"
+        return ""
 
     def parse(self, path: Path, ctx: ParseContext) -> Iterator[Event]:
         lines = _read(path, ctx)
         if not lines:
             return
 
-        posix = str(path).replace("\\", "/").lower()
-        name = path.name.lower()
         where = path.name
+        handler = self.handler_for(path)
 
-        if name in ("mongod.conf", "mongodb.conf", "redis.conf", "postgresql.conf"):
+        if handler == "service":
             findings = inspect_service_config(path.name, lines)
-        elif name in ("sshd_config",):
+        elif handler == "sshd":
             findings = inspect_sshd_config(lines)
-        elif name == "passwd":
+        elif handler == "passwd":
             findings = inspect_passwd(lines)
-        elif name == "shadow":
+        elif handler == "shadow":
             findings = inspect_shadow(lines)
-        elif name == "sudoers" or "/sudoers.d/" in posix:
+        elif handler == "sudoers":
             findings = inspect_sudoers(lines, where)
-        elif name.startswith("authorized_keys"):
+        elif handler == "authorized_keys":
             findings = inspect_authorized_keys(lines, path)
-        elif name == "crontab" or "/cron." in posix or "/spool/cron/" in posix:
+        elif handler == "cron":
             findings = inspect_cron(lines, where)
-        elif name == "ld.so.preload":
+        elif handler == "preload":
             findings = inspect_preload(lines)
         else:
-            settings, commented = read_indented_config(lines)
-            detail = " ¦ ".join(f"{k}: {v}" for k, v in list(settings.items())[:10])
-            findings = [_finding(
-                f"{path.name} configuration", detail or f"{len(lines)} line(s)",
-                "info", "config_posture",
-            )]
+            # sniff() declines these, so reaching here means a caller invoked parse()
+            # directly. Refuse rather than emit a content-free posture row.
+            ctx.hint(f"{path.name}: no linux_config handler for this file")
+            return
 
         # A file with nothing wrong still has to appear, or "checked and clean" and
         # "never collected" are indistinguishable in the timeline.
