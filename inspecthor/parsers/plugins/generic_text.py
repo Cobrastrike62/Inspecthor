@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterator
 
+from ... import textkind
 from ...evidence import is_collector_noise
 from ...models import Event, ParseContext
 from .._textio import read_lines
@@ -113,6 +114,15 @@ _LOG_STEMS: dict[str, str] = {
 }
 
 
+def _read_head(path: Path, limit: int = 8192) -> str:
+    """First few KB, for classifying what the file is. Never raises."""
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            return handle.read(limit)
+    except OSError:
+        return ""
+
+
 def source_label(path: Path) -> str:
     """A source_artifact that names the log, not just its format.
 
@@ -181,6 +191,15 @@ class GenericText(Parser):
         preview: list[str] = []
         preview_bytes = 0
 
+        # Classified once, up front, and applied to every line. This used to run only on
+        # files with NO timestamps, so utmpdump output — the one file in a UAC collection
+        # that most deserves the label "Login records" — produced 11 rows titled
+        # "Log line", because having timestamps sent it down the other path. A separate
+        # read of the head is cheaper than deferring the decision into the main loop,
+        # where a short file would never reach the threshold to make it.
+        head = _read_head(path)
+        _kind, label, _sev, label_why = textkind.classify(path.name, head)
+
         for line in read_lines(path, ctx.max_bytes):
             if not line.strip():
                 continue
@@ -194,24 +213,45 @@ class GenericText(Parser):
                     preview_bytes += len(line)
                 continue
             emitted += 1
+            data = {"why": label_why} if label_why else {}
             yield ctx.event(
                 timestamp=timestamp,
                 timestamp_desc="Log line time",
                 event_type="log_line",
-                message=line[:500],
+                title=label,
+                details=line[:500],
+                message="",
+                data=data,
+                tags=["worth_reading"] if label_why else [],
                 raw=line[:_MAX_LINE],
                 **common,
             )
 
         # Nothing timestamped: keep the file reachable by search and the IOC sweep
         # rather than dropping it from the case entirely.
+        #
+        # It used to say only "N lines, no parseable timestamps", which on a UAC
+        # collection was the sole description of 1,326 files — including a 753 KB lsof
+        # inventory of every open socket on the host. The content was searchable; there
+        # was no reason for anyone to go looking. Now the row says what the file is.
         if emitted == 0 and preview:
+            body = "\n".join(preview)[:_PREVIEW_BYTES]
+            title, details, severity, why = textkind.describe(
+                path.name, head or body[:8000], len(preview),
+            )
+            data: dict = {"lines": len(preview)}
+            if why:
+                data["why"] = why
             yield ctx.event(
                 timestamp=mtime,
                 timestamp_desc="Artifact mtime (no timestamps in content)",
                 event_type="text_artifact",
-                message=f"{path.name}: {len(preview)} lines, no parseable timestamps",
-                data={"lines": len(preview)},
-                raw="\n".join(preview)[:_PREVIEW_BYTES],
+                title=title,
+                details=details,
+                message="",
+                data=data,
+                severity=severity,
+                tags=["worth_reading"] if why else [],
+                raw=body,
                 **common,
             )
