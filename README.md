@@ -277,6 +277,7 @@ Also handles VHD, E01, VMDK and QCOW2.
 | Timestamped app logs, Apache/nginx access logs, plain text | nothing |
 | **MongoDB** server logs (`mongod.log`, 4.4+ JSON format) | nothing |
 | **Linux config and accounts** — `mongod.conf`, `sshd_config`, `passwd`, `shadow`, `sudoers`, `authorized_keys`, `cron` | nothing |
+| **Shell history** — `.bash_history`, zsh, mysql/psql/mongosh/python REPL | nothing |
 | **Filesystem timelines** — Sleuth Kit / mactime `bodyfile` | nothing |
 | **UAC collections** (Unix-like Artifacts Collector) | nothing |
 | Windows Event Logs — Security, System, PowerShell, Sysmon, Task, RDP, Defender | `--full` |
@@ -321,6 +322,35 @@ and it looks identical to a missing one unless you read the comments.
 pages. Those are registered and counted but not turned into timeline events. Security-
 relevant config is exempt from that: `/etc/sudoers.d/`, `/etc/cron.d/`,
 `/etc/systemd/system/` and `.ssh/authorized_keys` are always parsed.
+
+**Shell history becomes a command timeline.** `.bash_history` and the mysql / psql /
+mongosh / python REPL histories are parsed one command per event, scored by what the
+command does:
+
+```
+[ med] Escalated to root            Cmd: sudo su ¦ Line: 1
+[high] Database dump                Cmd: mongodump --out /tmp/loot ¦ Line: 7
+[high] History or log destruction   Cmd: history -c ¦ Line: 9
+```
+
+Bash only records times when `HISTTIMEFORMAT` is set. Without it, order is still
+evidence, so entries keep their line number and are placed in sequence — and
+`timestamp_desc` says outright that the ordering is real and the clock is not.
+
+**Command output says what it is.** UAC names each output file after the command that
+produced it, so files with no per-line timestamps are labelled rather than reduced to a
+line count:
+
+```
+utmpdump_var_log_wtmp.txt  →  Login records (utmpdump of wtmp/btmp)
+lsof_-nPl.txt              →  Open files and sockets (lsof)
+ss_-anp.txt                →  Network connections (ss)
+suid.txt                   →  SUID binaries
+```
+
+Authentication records are also detected by content, so a log copied anywhere still gets
+flagged. These are labels, not alerts — everything stays `info` except files containing
+a private key or an embedded credential, which are `med`.
 
 ### Filesystem timelines
 
