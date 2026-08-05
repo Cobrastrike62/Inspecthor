@@ -1,5 +1,83 @@
 # Changelog
 
+## v0.7.1 — shell history, and a rule about claiming files
+
+Two reports on the same collection: several `.txt` files went unparsed and should at
+least be flagged as worth reading, and — more seriously — *".bash_history was not
+parsed. this log was extremely important in seeing what commands the attacker ran."*
+
+### A parser must never claim a file it cannot parse
+
+The second was a regression introduced in v0.7.0. `linux_config.sniff()` claimed
+everything `is_evidence_config` recognized. `.bash_history` is on that list, so it won at
+0.75 against the generic text parser's 0.2, hit no handler, fell through to a
+`key: value` reader that found nothing, and emitted one row reading
+`.bash_history configuration — 12 line(s)`. The parser it displaced would have stored a
+searchable 16 KB preview, so `find mongodump` would have hit.
+
+**A parser that claims a file and produces nothing is worse than no parser**, because it
+silently removes a fallback that was working. `sniff()` now asks `handler_for()` and
+declines anything unhandled; `parse()` refuses rather than emitting a content-free row.
+
+That is the third instance of this shape in one release — `Image` not mapping to
+`new_process_name`, the Sigma text tokens still spelled `generic_text`, and this — all
+with the same signature: **no error, no warning, and output that reads as "nothing
+here."** So the fix is a structural guard rather than a third patch.
+`tests/test_no_silent_swallow.py` asserts, for 13 real evidence filenames, that whichever
+parser wins produces events *and* leaves the content searchable, *and* never retains less
+than the fallback it displaced. That last assertion is what would have caught this: the
+bug passed every existing test, because those only covered files with handlers written
+for them.
+
+### Shell and client history
+
+`.bash_history`, zsh, and mysql / psql / mongosh / python REPL histories. Handles plain
+lines, bash `HISTTIMEFORMAT` `#<epoch>` markers, and zsh `: <epoch>:<n>;command`.
+
+**Order is evidence even without timestamps.** Entries carry their line number and
+untimed ones are spaced in sequence rather than collapsed onto one mtime, with
+`timestamp_desc` stating that the ordering is real and the clock is not. Commands are
+scored, not the file — a history full of `ls` and `cd` stays `info`; `mongodump`,
+`curl | bash`, `/dev/tcp/`, `history -c` and `chmod +s` do not.
+
+### Text files now say what they are
+
+Measured: **1,326 of 1,331 `.txt` files** in a UAC collection produced one event each,
+described only by a line count — including a 753 KB `lsof` inventory of every open socket
+on the host. The content was always searchable via the FTS-indexed preview; nothing told
+an analyst to look.
+
+`textkind` classifies by filename first, because UAC names each output file after the
+command that produced it and those names were measured from a real collection. Content
+patterns are used only where they are fixed strings — sshd and PAM authentication
+records, private key headers — not column layouts, whose exact spacing varies by version
+and was not available to check against.
+
+```
+utmpdump_var_log_wtmp.txt  →  Login records (utmpdump of wtmp/btmp)
+lsof_-nPl.txt              →  Open files and sockets (lsof)
+ss_-anp.txt                →  Network connections (ss)
+suid.txt                   →  SUID binaries
+```
+
+**Classifying is not alerting.** Everything is `info` except credential material, which
+is `med`. Four rounds of false positives in this project came from treating the existence
+of a thing as evidence of wrongdoing.
+
+It also runs on **timestamped** files now. The first version ran only where no timestamp
+was found, so `utmpdump` output — the one file in a UAC collection that most deserves
+"Login records" — produced 11 rows titled `Log line`. A second attempt classified only
+after 40 lines, which an 11-line `utmpdump` would never have reached.
+
+### On the held-out case
+
+`.bash_history` yields `sudo su` at `med`, and the `wtmp` records now read as login
+records — showing `mongoadmin` logged in interactively from **65.0.76.43**, the same
+address as the 37,630 MongoDB connections. That is the pivot from exposed database to host
+access, and it was previously a row titled `Log line`.
+
+Tests 424 -> 507.
+
 ## v0.7.0 — Linux triage collections, and the first held-out test
 
 An HTB Sherlock nobody could finish, reported as two problems: *"most of the questions
