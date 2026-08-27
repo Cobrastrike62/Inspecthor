@@ -282,10 +282,12 @@ Also handles VHD, E01, VMDK and QCOW2.
 | **UAC collections** (Unix-like Artifacts Collector) | nothing |
 | Windows Event Logs — Security, System, PowerShell, Sysmon, Task, RDP, Defender | `--full` |
 | Registry hives — Run keys, services, timezone, USB, UserAssist, amcache | `--full` |
+| **NTFS `$MFT`** — full paths, MACB timeline, deleted files, ADS, timestomping | `--full` |
+| **NTFS USN journal** (`$Extend\$J`) — creates, deletes, renames | `--full` |
 | KAPE collections and disk images — VHDX, VHD, E01, VMDK, QCOW2 | `--full` |
 
-**Not yet:** `$MFT`/`$J`, prefetch, LNK, SRUM, browser history, PCAP, memory, cloud
-logs, `wtmp`/`btmp`/`lastlog`, systemd journals. Registry transaction logs
+**Not yet:** prefetch, LNK, SRUM, browser history, PCAP, memory, cloud logs,
+`wtmp`/`btmp`/`lastlog`, systemd journals. Registry transaction logs
 (`.LOG1`/`.LOG2`) are skipped rather than replayed, so unflushed hive changes are
 invisible.
 
@@ -370,6 +372,39 @@ credential files.
 This is where "what did they touch" lives when the application log cannot say. MongoDB,
 for instance, logs no queries by default: its log can prove 37,630 connections happened
 and never what was read.
+
+### NTFS `$MFT` and the USN journal
+
+The Windows equivalent, and often the whole case: a KAPE MFT+USN triage is `C/$MFT`,
+`C/$Extend/$J` and nothing else.
+
+```
+Timestamp            Sev   Title                     Details
+2025-09-02 07:56:54  high  File created              MACB: ...b ¦ Path: \Users\susan\AppData\…\Startup\Display Settings.lnk
+2025-09-01 08:47:30  info  File deleted              File: report.js.gz ¦ Reason: FILE_DELETE|CLOSE ¦ Parent segment: 98408
+```
+
+`$MFT` gives **full paths**, resolved by walking parent segment references across the
+whole table, plus deleted records, alternate data streams and timestomping. The journal
+gives what happened to files that no longer exist — the `FILE_CREATE` and `FILE_DELETE`
+of a payload that cleaned up after itself are often all that survives.
+
+A standalone `$J` has no `$MFT` to resolve its parent references against, so it reports
+the filename and puts the parent MFT segment in `data.parent_segment`. That joins to
+`data.segment` from the `$MFT` parser when both artifacts are in the case; when only the
+journal is present, nothing pretends to a directory it cannot know.
+
+Almost everything sits at `info` — 139,533 MFT segments become ~327,000 events, and a
+change journal is overwhelmingly Windows servicing itself. On a real collection that is
+543,180 timeline rows against an 86-row triage. Two rules are worth knowing because they
+are deliberately narrow:
+
+- **Timestomping** needs `$SI` creation *before* `$FN` creation **and** whole-second
+  `$SI` stamps, and ignores a skew shared across the table. Ordering alone is true for
+  most of a Windows deployed from an image — it flagged 248,164 of 323,548 events.
+- **Executable created** is *not* promoted from the journal. Without a directory there
+  is nothing to separate a payload from a Windows update, and promoting it put 6,590
+  OneDrive and Defender events into triage.
 
 ## Your own rules
 

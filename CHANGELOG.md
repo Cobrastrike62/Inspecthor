@@ -1,5 +1,80 @@
 # Changelog
 
+## v0.8.0 — $MFT, the USN journal, and a truncation that reported as success
+
+A KAPE VHDX holding `C/$MFT`, `C/$Extend/$J` and nothing else produced a case with three
+events and an empty triage. Nothing failed. The container opened, the NTFS volume
+mounted, both artifacts were found and both landed in *"no parser for those yet"* —
+because there wasn't one. `capabilities.py` has advertised `ntfs` → *"$MFT and $J USN
+journal"* since v0.5.0 and nothing ever implemented it, so the tool asked for the
+dependency, got it, and still left 178 MB of evidence on the floor.
+
+### $MFT
+
+`mft.py` emits one event per distinct `$STANDARD_INFORMATION` timestamp — the MACB
+grouping `bodyfile.py` settled on, for the same reason — plus deleted records, alternate
+data streams, and paths resolved across the whole table.
+
+**It buffers, and that is deliberate.** A record names its parent by segment number and
+children are routinely written before their parents, so no streaming pass can produce
+`\Users\hclarke\AppData\Local\Temp\update.exe`; only a segment→name map covering the
+entire table can. A second pass costs another 68 s on a 139,533-segment table, so the
+pass happens once into compact tuples of ints and strs and paths are resolved from the
+finished map — roughly 40 MB of peak memory on a 143 MB table, for the one field that
+makes every other field worth reading. It is the only plugin that does not stream, and
+the docstring says why.
+
+### The USN journal
+
+`usnjrnl.py` is claimed by name: `$J` opens with a sparse region, so it has no magic,
+and at the glob confidence of 0.6 it tied with `generic_text` and would have been read
+as text.
+
+A standalone `$J` cannot resolve its parent references — dissect renders the path as
+`<unavailable_reference_0x18068#1>\thing.exe`. Putting that string in 215,580 Path cells
+is worse than leaving it out, so the filename is reported alone and the parent segment
+goes to `data.parent_segment`, which joins to `data.segment` from the `$MFT` parser.
+
+### Scoring, four times over
+
+The first version was correct and useless: **248,164 of 323,548 events came back
+`high`.** Each round below was a real block of false positives, found by counting the
+`why` field rather than by reading samples:
+
+| Cause | Events | Resolution |
+|---|---|---|
+| `WofCompressedData`, the CompactOS overlay stream | 185,342 | excluded with the other Windows-owned streams |
+| A `$SI`→`$FN` skew *shared* across the table | 180,355 | count the skew, not the timestamp — 1213 days on one image generation, 1072 on another |
+| Installers preserving a vendor build date | ~700 | ordering **and** whole-second `$SI` now both required |
+| `\ProgramData\` treated as staging | 246 | Defender, VC++ and Start Menu shortcuts → `low`; Startup folders → `high` |
+| USN "executable created" | 6,590 | not promoted — no directory means no way to tell a payload from an update |
+| `Windows.Data.Pdf.dll` read as `.pdf` + `.dll` | 19 | `.dll` dropped from the lure set; dotted naming is the .NET convention |
+
+Final: **10 high, 76 med, 23,550 low, 519,544 info** — an 86-row triage against a
+543,180-row timeline. `tests/test_mft.py` and `tests/test_usnjrnl.py` pin every
+suppression above, because each one returns the moment a rule is loosened, and
+`test_a_genuinely_stomped_file_is_still_caught` is what stops the timestomp rule being
+tightened into one that can never fire.
+
+### A truncated $MFT that reported as complete
+
+Found while verifying the parser, and the worse bug of the two. `_copy_out` read until
+`read()` returned falsy. **An empty read is not proof of end of file:** dissect's
+run-list stream returns a short read at an extent boundary and an empty one directly
+after it. The same image therefore yielded 139,837,440 bytes at a 4 MiB chunk size and
+142,983,168 at 1 MiB, against a true size of 143,130,624 — a truncation that moved with
+the chunk size, so it could not be found by comparing two runs. Nothing was logged.
+
+The copy now runs to the size the filesystem reports, re-seeks past a stall, and the
+caller states a genuinely short copy instead of assuming completeness.
+
+Worth recording for whoever hits it next: **dissect and The Sleuth Kit do not agree on
+this `$MFT`.** TSK reproduces the SHA1 that KAPE recorded in its own `CopyLog.csv`
+exactly; dissect differs in 2,560 bytes — about 2½ records — at that same extent
+boundary, with an identical 139,533 record count. That is upstream of this tool and is
+not fixed here. The CopyLog is the reason it was noticeable at all, and verifying
+extracted files against it is the obvious next move.
+
 ## v0.7.1 — shell history, and a rule about claiming files
 
 Two reports on the same collection: several `.txt` files went unparsed and should at

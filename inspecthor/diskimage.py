@@ -53,6 +53,10 @@ _NTFS_INTERNALS = frozenset({
 _HEADER_BYTES = 512
 _COPY_CHUNK = 1024 * 1024
 
+# How many stalled extents to step over before giving up on one file. A handful is
+# normal on a fragmented $MFT; hundreds means the stream is broken, not fragmented.
+_MAX_COPY_STALLS = 64
+
 
 @dataclass
 class ExtractResult:
@@ -223,8 +227,15 @@ def extract(
 
                 try:
                     target.parent.mkdir(parents=True, exist_ok=True)
-                    written = _copy_out(fs, image_path, target, header,
-                                        max_bytes - result.bytes_written)
+                    written, expected = _copy_out(fs, image_path, target, header,
+                                                  max_bytes - result.bytes_written)
+                    if 0 <= written < expected:
+                        # Say so. A truncated artifact that reports as complete is
+                        # worse than one that fails outright.
+                        result.notes.append(
+                            f"{image_path}: copied {written:,} of {expected:,} "
+                            "bytes — the image could not produce the rest"
+                        )
                 except Exception as exc:
                     result.skipped["(copy failed)"] += 1
                     result.notes.append(
@@ -252,19 +263,50 @@ def _ext_of(name: str) -> str:
     return ("." + name.rsplit(".", 1)[1].lower()) if "." in name else "(no extension)"
 
 
-def _copy_out(fs, image_path: str, target: Path, header: bytes, budget: int) -> int:
-    """Stream one file out of the image. Returns bytes written."""
+def _copy_out(fs, image_path: str, target: Path, header: bytes,
+              budget: int) -> tuple[int, int]:
+    """Stream one file out of the image. Returns ``(bytes_written, expected)``.
+
+    CONSTRAINT: an empty read is NOT proof of end of file. dissect's run-list
+    stream returns a short read at an extent boundary and an empty one directly
+    after it, and a plain read-until-falsy loop takes that for EOF. On a KAPE
+    collection that silently truncated a 143,130,624-byte ``C/$MFT`` at
+    130,023,424 and dropped 2,981 real FILE records — and because the stall lands
+    mid-chunk, where it stopped depended on the chunk size, so the same image
+    yielded 139,837,440 bytes at 4 MiB and 142,983,168 at 1 MiB. Nothing reported
+    a problem either way. The copy now runs to the size the filesystem reports and
+    re-seeks past a stall, and the caller compares the two numbers so a genuinely
+    short file is stated rather than assumed complete.
+    """
+    entry = fs.get(image_path)
+    try:
+        expected = int(entry.stat().st_size)
+    except Exception:
+        expected = -1
+
     written = 0
-    with fs.get(image_path).open() as source, target.open("wb") as sink:
+    stalls = 0
+    with entry.open() as source, target.open("wb") as sink:
         # The header was already consumed for sniffing; re-read from the start.
         source.seek(0)
-        while True:
-            if budget <= 0:
+        while budget > 0:
+            if expected >= 0 and written >= expected:
                 break
-            chunk = source.read(min(_COPY_CHUNK, budget))
+            want = min(_COPY_CHUNK, budget)
+            if expected >= 0:
+                want = min(want, expected - written)
+            chunk = source.read(want)
             if not chunk:
-                break
+                if expected < 0:
+                    break                       # no size to aim for; trust the EOF
+                stalls += 1
+                if stalls > _MAX_COPY_STALLS:
+                    break
+                source.seek(written)            # step over the stalled extent
+                chunk = source.read(want)
+                if not chunk:
+                    break
             sink.write(chunk)
             written += len(chunk)
             budget -= len(chunk)
-    return written
+    return written, expected
