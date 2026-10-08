@@ -5,7 +5,7 @@ Notes for anyone changing the code. The README covers using it.
 ## The shape
 
 ```
-evidence/  ·  sherlock.zip  ·  KAPE .vhdx
+evidence/  ·  KAPE .vhdx  ·  collection.zip  ·  EZTools .csv
       |
    analyze.py ── the only orchestration; one call does the whole case
       |
@@ -14,7 +14,6 @@ evidence/  ·  sherlock.zip  ·  KAPE .vhdx
       +-- infer.py     derive timezone / year / host FROM the evidence
       +-- detect/      YARA over bytes, Sigma over normalized events
       +-- ioc.py       indicators, linked back to the events they came from
-      +-- sherlock.py  question -> ranked candidate answers
       +-- store/       per-case SQLite + FTS5
       |
    cli.py ── renders it. The only module allowed to print.
@@ -31,8 +30,8 @@ and why adding a format never touches the engine.
 
 Times are stored twice: `ts` as UTC ISO8601 for reading, `ts_epoch` as
 microseconds for sorting. `(ts_epoch, id)` is the canonical order, so "the *first*
-such event" is answerable — which matters because half the Sherlock questions are
-phrased that way.
+such event" is answerable, which is how most timeline questions are
+actually phrased.
 
 ## An event has to say what happened
 
@@ -231,7 +230,7 @@ between a coverage gap and an apparent absence of activity.
 
 ## Hostile input
 
-Sherlock packages and real incident evidence contain zip bombs, traversal paths,
+Collection archives and real incident evidence contain zip bombs, traversal paths,
 truncated archives, and files that expand to gigabytes. So: caps on file count,
 read size and events per artifact, all module constants in `engine.py` rather than
 buried; entry and size limits checked *before* extraction writes anything;
@@ -255,36 +254,6 @@ mis-evaluated detection rule reads as "no hits" on a compromised host, which is
 the worst possible failure mode.
 
 Adding detections means adding rule files, not code.
-
-## Answers
-
-`sherlock.py` maps a question to the field that probably holds the answer, then
-formats it the way HTB expects: UTC `YYYY-MM-DD HH:MM:SS`, uppercase hashes, bare
-integers, exact paths. Wrong formatting fails a correct answer.
-
-Each rule lists *several* candidate field names, because the same fact lands under
-different keys depending on the parser — a command line is `cmdline` from EVTX but
-`cmd` from sudo, and a rule that knows only one of them silently answers nothing.
-
-Ranking is by how unambiguous the evidence is: one distinct value scores higher
-than one of forty. Nothing is ever submitted.
-
-A registry key holds several values and usually only one of them is the answer, so
-`value_names` restricts which may answer, best first — `TimeZoneInformation` also
-carries `StandardName` and `DaylightName`, unresolved MUI references on a real host,
-and the `ComputerName` key has a `(Default)` value that held `svcdflt`. Without that
-restriction the tool offered `@tzres.dll,-161` as the timezone and `svcdflt` as the
-hostname, both at the same confidence as the truth, and the real timezone answer was
-pushed off the end of the list.
-
-`exclude` drops values that are never the answer whatever the tally says. Loopback is
-the case that matters: 61 local logons from `::1` outvoted 2 real remote failures
-under `prefer="most_common"`, so the attacker's IP was reported as the victim's own
-machine at 0.70.
-
-The rule behind both: **a confident wrong answer is worse than no answer.** The
-analyst has nothing to tell it apart from a right one, which is the same reasoning
-that closed the `_family()` fallback above.
 
 ## Not here on purpose
 
@@ -313,11 +282,12 @@ binary formats and both answer "who logged in", which currently has to come from
 **Validation is the standing debt.** Every measurement in this file except the UAC
 numbers comes from one Windows collection whose heuristics were tuned against it, with
 the incident time supplied. `tests/test_score.py` asserts that incident's literal strings
-and is a regression guard, not evidence. The one held-out test so far — a Linux Sherlock
-nobody had finished — found two real misconfigurations unprompted, and also exposed that
-three of the four "fixes" made for it were treating symptoms. That ratio is the argument
-for scoring against HTB Sherlocks with published answers and Atomic Red Team's command
-corpus, neither of which this has been run against.
+and is a regression guard, not evidence. The one held-out test so far — a Linux
+collection nobody had finished — found two real misconfigurations unprompted, and also
+exposed that three of the four "fixes" made for it were treating symptoms. That ratio
+is the argument for scoring against public DFIR challenge corpora with published
+answers and Atomic Red Team's command corpus, neither of which this has been run
+against.
 
 Templates are the other axis, and the coverage block says where to spend the
 effort — it ranks the unrecognized event IDs by volume, so the next template to

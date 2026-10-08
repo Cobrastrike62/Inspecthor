@@ -124,7 +124,7 @@ def test_indented_paths_are_dotted():
 
 
 def test_the_mangobleed_config_is_critical(tmp_path: Path):
-    """The whole answer to a real Sherlock, from two lines of config."""
+    """The whole picture on a real case, from two lines of config."""
     events, _ = _parse(tmp_path, "mongod.conf", MONGOD_CONF)
     assert events
     top = events[0]

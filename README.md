@@ -11,11 +11,12 @@
 
 [![tests](https://github.com/Cobrastrike62/Inspecthor/actions/workflows/tests.yml/badge.svg)](https://github.com/Cobrastrike62/Inspecthor/actions/workflows/tests.yml)
 
-Forensic triage for Windows and Linux evidence. Point it at a KAPE VHDX, a UAC
-collection, a folder, or an HTB Sherlock zip; it parses everything it recognizes,
-scores what looks suspicious, runs Sigma and YARA, and writes a timeline you can read.
+Forensic triage for Windows and Linux evidence. Point it at a KAPE collection or
+VHDX, the CSVs KAPE's modules produce, a Velociraptor or UAC collection, or a
+plain folder; it parses everything it recognizes, scores what looks suspicious,
+runs Sigma and YARA, and writes a timeline you can read.
 
-> Work in a VM. Sherlock packages and real incident artifacts contain live malware.
+> Work in a VM. Incident artifacts contain live malware.
 > Only examine evidence you are authorized to examine.
 
 ---
@@ -93,7 +94,7 @@ Refresh them by re-running the commands above.
 ## Quick start
 
 ```bash
-inspecthor sherlock.zip --rules ~/sigma-rules
+inspecthor C:	riage\KAPE --rules ~/sigma-rules
 ```
 
 One command. It unpacks the archive, picks a parser per file, derives the host's
@@ -123,9 +124,6 @@ Saved
   report   pkg-report.md
   case     pkg.db
 ```
-
-For Sherlocks, suggested answers show the event they came from. `>` means confident,
-`·` means look closer. Nothing is submitted for you.
 
 ## Output files
 
@@ -451,8 +449,6 @@ fails the whole ruleset.
 **Keep Sigma rules off `/mnt/c`** under WSL. See
 [Get the Sigma rules](#get-the-sigma-rules).
 
-**Sherlock answers are candidates.** Verify before submitting.
-
 ## Performance
 
 Measured on a 2.1 GB KAPE VHDX — 797,972 events, 225 extracted files:
@@ -464,8 +460,8 @@ Measured on a 2.1 GB KAPE VHDX — 797,972 events, 225 extracted files:
 | Case file | 1.9 GB |
 | `triage.csv` / `timeline.csv` | 26 MB / 571 MB |
 
-A Sherlock package is thousands of events, not hundreds of thousands — seconds, not
-minutes.
+A targeted triage collection is thousands of events, not hundreds of thousands —
+seconds, not minutes.
 
 ## Tests
 

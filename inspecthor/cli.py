@@ -1,13 +1,12 @@
 """Command line.
 
-Four things you can do:
+Three things you can do:
 
     inspecthor <evidence>          analyze it and tell me what happened
-    inspecthor ask "<question>"    answer one question about the last case
     inspecthor find <text>         search everything
     inspecthor timeline            show what happened, in order
 
-The first one is the tool. The other three are for following up on it.
+The first one is the tool. The other two are for following up on it.
 
 CONSTRAINT: this is the only module that prints. Everything below it returns
 objects.
@@ -105,6 +104,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
             detect=not args.no_detect,
             rule_dirs=rule_dirs,
             progress=lambda msg: status.update(f"[cyan]{msg}[/]"),
+            password=getattr(args, "password", None),
         )
 
     if not result.evidence_root:
@@ -195,33 +195,6 @@ def _render_result(console: Console, result: analyze_mod.Result) -> None:
                 "all of them are in the report[/]"
             )
 
-    # --- answers ---
-    if result.answers:
-        console.print(
-            f"\n[bold]The evidence came with {len(result.questions)} question(s)[/]"
-            "  [dim](candidates — verify before submitting)[/]"
-        )
-        for question, candidates in result.answers:
-            console.print(f"\n  [bold]{escape(question)}[/]")
-            if not candidates:
-                console.print("    [dim]no candidate — try 'inspecthor find <keyword>'[/]")
-                continue
-            for cand in candidates:
-                confident = cand.confidence >= 0.75
-                marker = "[bold green]>[/]" if confident else "[dim]·[/]"
-                line = Text.assemble(
-                    (f"{cand.confidence:.2f}  ", "bold green" if confident else "dim"),
-                    (f"{cand.answer}", "bold" if confident else ""),
-                    (f"   {cand.label}", "dim"),
-                    (f" — {cand.why}", "dim"),
-                )
-                console.print("   ", marker, line)
-    elif result.overview:
-        console.print(
-            "\n[bold]Opening facts[/]  [dim](candidates — verify before submitting)[/]"
-        )
-        console.print(reporter.candidates_table(result.overview))
-
     # --- caveats ---
     for note in result.context.notes:
         console.print(f"\n[yellow]note:[/] {escape(note)}")
@@ -248,34 +221,12 @@ def _render_result(console: Console, result: analyze_mod.Result) -> None:
         + f"  case     [cyan]{result.db_path}[/]"
     )
     console.print(
-        '\n[dim]Follow up with:  inspecthor ask "when did they first log in?"'
-        "   ·   inspecthor find <text>   ·   inspecthor timeline[/]"
+        "\n[dim]Follow up with:  inspecthor find <text>"
+        "   ·   inspecthor timeline[/]"
     )
 
 
 # ---- follow-up commands ----
-
-
-def cmd_ask(args: argparse.Namespace) -> int:
-    from .sherlock import answer_question
-
-    console = _console()
-    store = _open_case(console, args.case)
-    if store is None:
-        return 1
-    try:
-        question = " ".join(args.question)
-        candidates = answer_question(store, question)
-        if not candidates:
-            console.print(
-                "[yellow]no candidate for that.[/] Try different words, or "
-                f"[bold]inspecthor find <keyword>[/] to look directly."
-            )
-            return 0
-        console.print(reporter.candidates_table(candidates))
-        return 0
-    finally:
-        store.close()
 
 
 def cmd_find(args: argparse.Namespace) -> int:
@@ -339,11 +290,12 @@ def build_parser() -> argparse.ArgumentParser:
         description="Point it at forensic evidence; it tells you what happened.",
         epilog=(
             "examples:\n"
-            "  inspecthor sherlock.zip              analyze a Sherlock package\n"
-            "  inspecthor /mnt/evidence             analyze a folder\n"
-            '  inspecthor ask "attacker IP?"        ask about the last case\n'
-            "  inspecthor find 45.33.32.156         search everything\n"
-            "  inspecthor timeline --all            the full timeline\n"
+            "  inspecthor C:\\triage\\KAPE               analyze a KAPE collection\n"
+            "  inspecthor 2026-07-27T19_HOST.vhdx     analyze a KAPE VHDX\n"
+            "  inspecthor /mnt/evidence               analyze a folder\n"
+            "  inspecthor collection.zip --password infected\n"
+            "  inspecthor find 45.33.32.156           search everything\n"
+            "  inspecthor timeline --all              the full timeline\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -353,9 +305,11 @@ def build_parser() -> argparse.ArgumentParser:
     run = sub.add_parser(
         "analyze",
         help="analyze evidence (the default — you can omit the word 'analyze')",
-        description="Parse everything, work out the case context, detect, and answer.",
+        description="Parse everything, work out the case context, detect, report.",
     )
-    run.add_argument("evidence", help="a folder, a Sherlock .zip, or a single file")
+    run.add_argument("evidence",
+                     help="a folder, a collection archive, a disk image, or a "
+                          "single file")
     run.add_argument("--out", metavar="DIR", default=None,
                      help="where to write the report, timeline and case file "
                           "(default: here)")
@@ -373,14 +327,10 @@ def build_parser() -> argparse.ArgumentParser:
                      help="override the year it worked out")
     run.add_argument("--host", metavar="NAME", default=None,
                      help="override the hostname it worked out")
+    run.add_argument("--password", metavar="PW", default=None,
+                     help="password for an encrypted collection archive "
+                          "('infected' is tried automatically)")
     run.set_defaults(func=cmd_analyze)
-
-    ask = sub.add_parser("ask", help="answer one question about the last case")
-    ask.add_argument("question", nargs="+", metavar="WORDS",
-                     help='the question, e.g. "what account did they create?"')
-    ask.add_argument("--case", metavar="FILE", default=None,
-                     help="a specific case file (default: the newest one here)")
-    ask.set_defaults(func=cmd_ask)
 
     find = sub.add_parser("find", help="search every artifact at once")
     find.add_argument("text", help="what to look for")
@@ -406,7 +356,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-_VERBS = {"analyze", "ask", "find", "timeline"}
+_VERBS = {"analyze", "find", "timeline"}
 
 
 def main(argv: list[str] | None = None) -> int:

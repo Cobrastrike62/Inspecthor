@@ -1,8 +1,9 @@
 """inspecthor — read-only forensic timeline and artifact analysis.
 
-Point it at an evidence folder or a Sherlock package and it fingerprints every
-file, routes each to a parser plugin, and normalizes the results into a single
-time-sorted event store you can search across artifact boundaries.
+Point it at a KAPE collection, a triage archive, a disk image or an evidence
+folder and it fingerprints every file, routes each to a parser plugin, and
+normalizes the results into a single time-sorted event store you can search
+across artifact boundaries.
 
 CONSTRAINT: this tool never writes to evidence. Artifacts are opened read-only
 and hashed on ingest; all derived state lives in a separate per-case SQLite DB.

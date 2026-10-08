@@ -1,7 +1,7 @@
 """Windows Event Logs (.evtx).
 
-The highest-value artifact in practice: most Sherlocks and most real intrusions
-are reconstructed primarily from Security, System, PowerShell and Sysmon channels.
+The highest-value artifact in practice: most intrusions are reconstructed
+primarily from the Security, System, PowerShell and Sysmon channels.
 
 Two design notes worth knowing:
 

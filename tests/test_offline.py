@@ -156,14 +156,45 @@ def test_sha256_is_stable(evidence: Path):
 # ---- archives ---------------------------------------------------------------
 
 
-def test_open_evidence_extracts_htb_password_zip(tmp_path: Path):
-    """The Sherlock password is tried automatically — that is the point."""
-    archive = tmp_path / "sherlock.zip"
+def test_open_evidence_extracts_a_plain_zip(tmp_path: Path):
+    archive = tmp_path / "collection.zip"
     with zipfile.ZipFile(archive, "w") as zf:
-        zf.writestr("readme.txt", "1) What is the attacker IP?\n")
+        zf.writestr("auth.log", "Mar  1 09:15:01 web01 sshd[1]: Accepted password\n")
     root, note = open_evidence(archive, tmp_path / "out")
     assert note == ""
-    assert (root / "readme.txt").is_file()
+    assert (root / "auth.log").is_file()
+
+
+def test_the_supplied_password_is_tried_before_the_defaults(tmp_path: Path):
+    """stdlib zipfile cannot WRITE an encrypted archive, so the attempt order is
+    asserted directly rather than end to end. It matters: evidence and malware are
+    routinely shipped encrypted, and 'infected' is the convention the defaults
+    exist for now that the CTF passwords are gone.
+    """
+    import inspecthor.engine as engine_mod
+
+    tried: list = []
+
+    def fake_extractall(self, path=None, members=None, pwd=None):
+        tried.append(pwd)
+        if pwd != b"s3cret":
+            raise RuntimeError("Bad password for file")
+
+    archive = tmp_path / "enc.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("a.txt", "x")
+
+    original = zipfile.ZipFile.extractall
+    zipfile.ZipFile.extractall = fake_extractall
+    try:
+        ok, why = engine_mod._extract_zip(archive, tmp_path / "out", password="s3cret")
+    finally:
+        zipfile.ZipFile.extractall = original
+
+    assert ok, why
+    assert tried[0] == b"s3cret", "the analyst password must be tried first"
+    assert b"infected" in engine_mod._DEFAULT_PASSWORDS
+    assert not any(pw and b"hack" in pw for pw in engine_mod._DEFAULT_PASSWORDS)
 
 
 def test_open_evidence_reports_missing_path(tmp_path: Path):
@@ -575,58 +606,6 @@ def test_attack_db_validates_ids():
         pytest.skip("no bundled ATT&CK database available")
     assert db.valid(["T1110.001", "T9999.999", "t1059"]) == ["T1110.001", "T1059"]
     assert db.name_of("T1059")
-
-
-# ---- sherlock ---------------------------------------------------------------
-
-
-def test_questions_extracted_from_numbered_readme(tmp_path: Path):
-    from inspecthor.sherlock import questions_from_file
-    readme = tmp_path / "readme.txt"
-    readme.write_text(
-        "Scenario: something happened.\n"
-        "1) What is the attacker's IP address?\n"
-        "2. Which account was compromised?\n"
-        "3 - When did the attacker first log in?\n"
-    )
-    questions = questions_from_file(readme)
-    assert len(questions) == 3
-    assert "attacker's IP" in questions[0]
-
-
-def test_sherlock_suggests_the_attacker_ip(case: CaseStore):
-    from inspecthor.sherlock import answer_question
-    candidates = answer_question(case, "What is the attacker's IP address?")
-    assert candidates
-    assert candidates[0].answer == "45.33.32.156"
-    assert candidates[0].confidence > 0.5
-
-
-def test_sherlock_suggests_created_account(case: CaseStore):
-    from inspecthor.sherlock import answer_question
-    candidates = answer_question(case, "What account did the attacker create?")
-    assert any(c.answer == "backdoor" for c in candidates)
-
-
-def test_sherlock_formats_timestamps_the_way_htb_wants(case: CaseStore):
-    from inspecthor.sherlock import answer_question, fmt_hash, fmt_int, fmt_utc
-    assert fmt_utc("2024-03-01T09:15:14+00:00") == "2024-03-01 09:15:14"
-    assert fmt_hash("abc123") == "ABC123"
-    assert fmt_int("1,024") == "1024"
-    candidates = answer_question(case, "When did the brute force succeed?")
-    assert candidates
-    datetime.strptime(candidates[0].answer, "%Y-%m-%d %H:%M:%S")
-
-
-def test_sherlock_overview_runs_without_a_question(case: CaseStore):
-    from inspecthor.sherlock import overview
-    candidates = overview(case)
-    assert any(c.answer == "45.33.32.156" for c in candidates)
-
-
-def test_sherlock_returns_nothing_for_an_unmappable_question(case: CaseStore):
-    from inspecthor.sherlock import answer_question
-    assert answer_question(case, "what is the airspeed velocity of a swallow") == []
 
 
 # ---- detection --------------------------------------------------------------

@@ -1,11 +1,11 @@
 """Linux auth.log / secure / syslog.
 
 Pure stdlib, so this parser works on any install — which matters because a
-stdlib-only checkout must still be able to solve a Linux Sherlock.
+stdlib-only checkout must still be able to work a Linux case.
 
 Beyond normalizing lines, this correlates the SSH brute-force story: repeated
 failures from an address followed by a success for one of the same accounts is
-the single most common Sherlock answer chain, and it is only visible if the
+the single most common Linux intrusion chain, and it is only visible if the
 parser remembers what it has already seen.
 """
 from __future__ import annotations

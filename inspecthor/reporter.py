@@ -147,28 +147,6 @@ def findings_table(rows: Sequence[dict]) -> Table:
     return table
 
 
-def candidates_table(candidates: Sequence[Any]) -> Table:
-    """Sherlock candidate answers. Framed as candidates, never as answers."""
-    table = Table(
-        title="Candidate answers — verify before submitting",
-        header_style="bold", expand=True,
-    )
-    table.add_column("conf", width=5, no_wrap=True)
-    table.add_column("what", max_width=26, no_wrap=True)
-    table.add_column("answer", overflow="fold")
-    table.add_column("from", max_width=30, overflow="fold")
-    for cand in candidates:
-        confidence = float(getattr(cand, "confidence", 0.0))
-        style = "bold green" if confidence >= 0.8 else (None if confidence >= 0.5 else "dim")
-        table.add_row(
-            f"{confidence:.2f}", _t(getattr(cand, "label", "")),
-            _t(getattr(cand, "answer", "")),
-            _t(f"{getattr(cand, 'source', '')} — {getattr(cand, 'why', '')}".strip(" —")),
-            style=style,
-        )
-    return table
-
-
 # ---- exporters ----
 
 

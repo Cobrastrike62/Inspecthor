@@ -5,12 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "inspecthor"
 version = "0.8.0"
-description = "Read-only forensic timeline and artifact analysis for blue teams and HTB Sherlocks"
+description = "Read-only DFIR timeline and artifact analysis: KAPE, EZTools, Velociraptor, Plaso and raw collections"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Cobrastrike62" }]
-keywords = ["dfir", "forensics", "timeline", "blueteam", "hackthebox", "sherlock"]
+keywords = ["dfir", "forensics", "timeline", "blueteam", "incident-response",
+            "kape", "eztools", "velociraptor", "plaso", "triage"]
 # Core stays stdlib + rich: a bare install must always ingest text/syslog/sqlite/
 # cloud-json evidence. Every binary-artifact parser is an extra that degrades to a
 # one-line install hint when absent (the CONSTRAINT).

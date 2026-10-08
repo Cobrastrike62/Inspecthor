@@ -1,6 +1,6 @@
 """MongoDB server log (``mongod.log``), the structured JSON format of 4.4 and later.
 
-Written because a real Sherlock could not be answered without it. The collection held
+Written because a real case could not be worked without it. The collection held
 22 MB of clean, one-object-per-line JSON — timestamps, severity, component, and the
 remote address of every connection — and the tool read all of it as anonymous text.
 Every question was about MongoDB and nothing in the timeline said which rows were

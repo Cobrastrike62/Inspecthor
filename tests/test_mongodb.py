@@ -1,6 +1,6 @@
 """Tests for the MongoDB log parser and text-log source labelling.
 
-Both exist because of one Sherlock the tool could not answer. The record shapes here
+Both exist because of one case the tool could not work. The record shapes here
 are copied verbatim from a real 22 MB ``mongod.log`` (MongoDB 8.0.16), including the
 irregular whitespace mongod emits after ``"s":`` and ``"c":``.
 """
@@ -250,39 +250,6 @@ def test_access_control_warning_outranks_the_severity_letter(tmp_path: Path):
     """Both are 'W'. One is housekeeping; the other is the vulnerability."""
     events, _ = _parse(_write(tmp_path, [NO_AUTH]))
     assert events[0].severity == "high"
-
-
-def test_the_flood_answers_the_attacker_ip_question(tmp_path: Path):
-    """SSH background noise outranked the real attacker on a real Sherlock, because
-    the answer rule only knew about logon events."""
-    from inspecthor.analyze import analyze
-    from inspecthor.sherlock import answer_question
-
-    root = tmp_path / "ev"
-    log_dir = root / "var" / "log" / "mongodb"
-    log_dir.mkdir(parents=True)
-    _write(log_dir, [STARTUP, LISTEN, NO_AUTH]
-           + [_conn(52 + (i % 8), port=40000 + i) for i in range(300)])
-
-    result = analyze(root, out_dir=tmp_path / "out", detect=False)
-    store = CaseStore(result.db_path)
-    try:
-        answers = [c.answer for c in
-                   answer_question(store, "What is the attacker's IP address?")]
-        assert answers and answers[0] == "65.0.76.43", answers
-
-        when = [c.answer for c in
-                answer_question(store, "When did the attacker first connect?")]
-        assert when and when[0].startswith("2025-12-29"), when
-
-        count = [c.answer for c in
-                 answer_question(store, "How many connections were made?")]
-        assert count and count[0] == "300", count
-
-        host = [c.answer for c in answer_question(store, "What is the hostname?")]
-        assert "mongodbsync" in host, host
-    finally:
-        store.close()
 
 
 def test_mongodb_log_runs_end_to_end_through_analyze(tmp_path: Path):

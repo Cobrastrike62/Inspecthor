@@ -4,7 +4,7 @@ CONSTRAINT: evidence is read-only. Files are opened 'rb', hashed, and never
 written to. Archives are extracted to a separate working directory.
 
 CONSTRAINT: every bound in this module exists because the input is hostile.
-Sherlock packages and real incident evidence contain zip bombs, traversal paths,
+Collection archives and real incident evidence contain zip bombs, traversal paths,
 truncated archives, and files that expand to gigabytes. Caps are module constants
 so they are visible and adjustable rather than buried.
 
@@ -34,9 +34,10 @@ _ZIP_MAX_ENTRIES = 100_000
 _ZIP_MAX_TOTAL = 16 * 1024 ** 3         # 16 GiB uncompressed ceiling (zip-bomb guard)
 _HASH_CHUNK = 1024 * 1024
 
-# HTB ships Sherlock evidence and challenge archives under fixed passwords.
-# Trying them automatically removes the most tedious step of starting a case.
-_HTB_PASSWORDS: tuple[Optional[bytes], ...] = (b"hacktheblue", b"hackthebox", None)
+# Evidence and malware are routinely shipped as encrypted archives, and `infected`
+# is the long-standing convention for the password. Trying it automatically removes
+# a tedious step; anything else comes from --password.
+_DEFAULT_PASSWORDS: tuple[Optional[bytes], ...] = (None, b"infected")
 
 # ---- fingerprinting ----
 
@@ -183,28 +184,35 @@ def _zip_within_bounds(archive: zipfile.ZipFile) -> tuple[bool, str]:
     return True, ""
 
 
-def _extract_zip(src: Path, dest: Path) -> tuple[bool, str]:
-    """Extract a zip, trying the HTB passwords in turn.
+def _extract_zip(src: Path, dest: Path,
+                 password: str | None = None) -> tuple[bool, str]:
+    """Extract a zip, trying the caller's password first, then the defaults.
 
     CPython sanitizes member paths in ``extractall``, so traversal is handled;
     the size/entry caps above are the part it does not do for us.
     """
+    attempts: tuple[Optional[bytes], ...] = _DEFAULT_PASSWORDS
+    if password:
+        attempts = (password.encode("utf-8"), *_DEFAULT_PASSWORDS)
     try:
         with zipfile.ZipFile(src) as archive:
             ok, why = _zip_within_bounds(archive)
             if not ok:
                 return False, why
             last_error = ""
-            for password in _HTB_PASSWORDS:
+            for password_bytes in attempts:
                 try:
-                    archive.extractall(dest, pwd=password)
+                    archive.extractall(dest, pwd=password_bytes)
                     return True, ""
                 except RuntimeError as exc:      # wrong/needed password
                     last_error = str(exc)
                     continue
                 except Exception as exc:
                     return False, f"{type(exc).__name__}: {exc}"
-            return False, last_error or "could not extract (password?)"
+            return False, (
+                last_error
+                or "could not extract — encrypted? pass --password"
+            )
     except zipfile.BadZipFile as exc:
         return False, f"bad zip: {exc}"
     except OSError as exc:
@@ -251,12 +259,14 @@ def open_evidence(
     src: Path,
     workdir: Path | None = None,
     progress=None,
+    password: str | None = None,
 ) -> tuple[Path, str]:
     """Resolve evidence to a directory to walk.
 
     Returns ``(root, note)``. A directory is used in place; an archive or disk
     image is opened into ``workdir``. ``note`` carries anything the console should
-    say — an extraction failure, or what a disk image contained.
+    say — an extraction failure, or what a disk image contained. ``password``
+    is tried first on an encrypted archive, before the defaults.
     """
     src = Path(src)
     if src.is_dir():
@@ -290,7 +300,7 @@ def open_evidence(
         return result.root, note
 
     if fingerprint.kind == "zip":
-        ok, why = _extract_zip(src, dest)
+        ok, why = _extract_zip(src, dest, password=password)
         return (dest, "") if ok else (src, f"zip extract failed: {why}")
     if fingerprint.kind in ("gzip", "bzip2", "xz") or src.suffixes[-2:] == [".tar", ".gz"]:
         ok, why = _extract_tar(src, dest)

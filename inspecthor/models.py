@@ -281,18 +281,3 @@ class ArtifactResult:
     artifact_id: Optional[int] = None
 
 
-@dataclass
-class Candidate:
-    """A proposed answer to a Sherlock question, formatted the way HTB expects.
-
-    Never auto-submitted — the console frames these as candidates to verify,
-    because a confidently wrong answer costs more than no answer.
-    """
-
-    answer: str
-    label: str
-    confidence: float                   # 0..1
-    source: str = ""                    # source_artifact it came from
-    why: str = ""                       # short provenance, e.g. "logon_failed @ 2024-01-02 03:04:05"
-    event_id: Optional[int] = None       # events.id row it came from
-    extra: Any = None

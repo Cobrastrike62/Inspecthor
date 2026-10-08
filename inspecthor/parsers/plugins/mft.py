@@ -1,7 +1,7 @@
 """$MFT — the NTFS master file table.
 
 Every KAPE triage ships one, and on a targeted MFT+USN collection it *is* the case:
-the RomCom Sherlock is 143 MB of ``$MFT``, 35 MB of ``$J`` and nothing else. Before
+one real collection was 143 MB of ``$MFT``, 35 MB of ``$J`` and nothing else. Before
 this parser the image opened, the volume mounted, both artifacts landed in "no parser
 for those yet", and the case came out with three events and an empty triage.
 

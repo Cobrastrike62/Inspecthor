@@ -1,10 +1,9 @@
 """The whole analysis, in one call.
 
 ``inspecthor <evidence>`` lands here. Everything that used to be a separate
-command — parse, derive the case context, run detections, sweep indicators, find
-the task file, answer its questions, write the report — happens in sequence
-because there is no useful state in between. An analyst who has to run five
-commands to see anything is doing the tool's job for it.
+command — parse, derive the case context, run detections, sweep indicators, write
+the report — happens in sequence because there is no useful state in between. An
+analyst who has to run five commands to see anything is doing the tool's job for it.
 
 CONSTRAINT: silent library. Returns a :class:`Result`; the CLI renders it.
 """
@@ -22,18 +21,9 @@ from .attack import AttackDB
 from .engine import Engine, open_evidence
 from .infer import Context
 from .ioc import IocSweeper
-from .models import ArtifactResult, Candidate, EventFilter, ParseContext
+from .models import ArtifactResult, EventFilter, ParseContext
 from .query import timeline
-from .sherlock import answer_questions, overview, questions_from_text
 from .store.store import CaseStore
-
-# Files that plausibly hold the investigation questions. HTB ships one with every
-# Sherlock; finding it automatically removes the last reason to pass a flag.
-_TASK_NAMES = re.compile(
-    r"(read ?me|task|question|brief|scenario|instruction|challenge|note)s?\b", re.I
-)
-_TASK_SUFFIXES = {".txt", ".md", ".rst", ".pdf", ".html", ""}
-_MAX_TASK_BYTES = 256 * 1024
 
 
 @dataclass
@@ -48,9 +38,6 @@ class Result:
     event_count: int = 0
     ioc_counts: dict = field(default_factory=dict)
     detections: int = 0
-    questions: list[str] = field(default_factory=list)
-    answers: list[tuple[str, list[Candidate]]] = field(default_factory=list)
-    overview: list[Candidate] = field(default_factory=list)
     report_path: str = ""
     timeline_path: str = ""
     notable_events: list[dict] = field(default_factory=list)
@@ -76,34 +63,6 @@ class Result:
     def notable(self, limit: int = 40) -> list[dict]:
         """The events worth reading first."""
         return self.notable_events[:limit]
-
-
-def find_task_file(root: Path) -> tuple[Optional[Path], list[str]]:
-    """Locate the investigation questions inside the evidence, if present."""
-    if not root.is_dir():
-        return None, []
-    candidates: list[Path] = []
-    for path in sorted(root.rglob("*")):
-        try:
-            if not path.is_file() or path.stat().st_size > _MAX_TASK_BYTES:
-                continue
-        except OSError:
-            continue
-        if path.suffix.lower() not in _TASK_SUFFIXES:
-            continue
-        if _TASK_NAMES.search(path.stem):
-            candidates.append(path)
-
-    # A file that actually contains questions beats one that merely looks like it.
-    for path in candidates:
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        questions = questions_from_text(text)
-        if questions:
-            return path, questions
-    return (candidates[0] if candidates else None), []
 
 
 def _default_case_name(source: Path) -> str:
@@ -153,9 +112,9 @@ def resolve_output_slug(out: Path, name: str, source: Path) -> tuple[str, str]:
       The database is entirely derived from the evidence, so re-deriving it is
       safe, and it is the only way to avoid silently double-counting every event.
     * a case for DIFFERENT evidence that happens to share a name — leave it alone
-      and take the next free suffix. Sherlock packages are full of folders called
-      'evidence' and 'artifacts', so this collision is common, and merging two
-      unrelated cases would quietly answer questions with the wrong data.
+      and take the next free suffix. Collections are full of folders called
+      'evidence', 'triage' and 'artifacts', so this collision is common, and
+      merging two unrelated cases would quietly mix one host's data into another.
     """
     base = _slugify(name)
     source_key = str(source.resolve())
@@ -187,6 +146,7 @@ def analyze(
     detect: bool = True,
     rule_dirs: tuple[Path, ...] = (),
     progress: Callable[[str], None] | None = None,
+    password: str | None = None,
 ) -> Result:
     """Analyze an evidence set end to end."""
     step = progress or (lambda _msg: None)
@@ -218,7 +178,8 @@ def analyze(
 
     step("unpacking evidence")
     # A disk image can take a while to walk, so the progress callback goes in.
-    root, note = open_evidence(source, out / f"{slug}-evidence", progress=step)
+    root, note = open_evidence(source, out / f"{slug}-evidence", progress=step,
+                               password=password)
     if note:
         result.warnings.append(note)
     if not root.exists():
@@ -283,19 +244,6 @@ def analyze(
         # ---- indicators ----
         step("extracting indicators")
         result.ioc_counts = IocSweeper(store).sweep()
-
-        # ---- answers ----
-        step("looking for the investigation questions")
-        task_file, questions = find_task_file(root)
-        if questions:
-            result.questions = questions
-            result.answers = answer_questions(store, questions, limit=3)
-        else:
-            if task_file is not None:
-                result.warnings.append(
-                    f"found {task_file.name} but no numbered questions in it"
-                )
-            result.overview = overview(store)
 
         # ---- outputs ----
         step("writing the report")

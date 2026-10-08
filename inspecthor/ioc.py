@@ -29,7 +29,7 @@ _PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
     ("domain", re.compile(r"\b(?:[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}\b")),
 )
 
-# Defanging styles seen in reports, tickets, and Sherlock task files.
+# Defanging styles seen in reports, tickets, and threat intel feeds.
 _REFANG = (
     (re.compile(r"h[xX]{2}p(s?)://", re.I), r"http\1://"),
     (re.compile(r"\bf[xX]p://", re.I), "ftp://"),
@@ -121,8 +121,8 @@ def extract_iocs(text: str, allowlist: set[str] | None = None) -> list[tuple[str
     """Pull indicators from a blob of text.
 
     Returns ``[(type, canonical_value, tags), ...]``, deduped, refanged. Hashes
-    are lowercased for storage consistency (the Sherlock formatter uppercases at
-    display time, which is what HTB expects).
+    are lowercased for storage consistency; callers that need another case
+    convert at display time.
     """
     allowlist = allowlist if allowlist is not None else _load_allowlist()
     if not text:

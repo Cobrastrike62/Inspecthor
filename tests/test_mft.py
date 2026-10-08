@@ -1,6 +1,6 @@
 """Tests for the NTFS $MFT parser.
 
-Numbers here come from the RomCom Sherlock's ``C/$MFT`` — 139,533 segments,
+Numbers here come from a real KAPE collection's ``C/$MFT`` — 139,533 segments,
 323,548 events. The parser was correct on its first run and useless: 248,164 of
 those events came back ``high``, because "$SI creation predates $FN creation" is
 true for most of an operating system deployed from an image.
