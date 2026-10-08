@@ -282,12 +282,22 @@ Also handles VHD, E01, VMDK and QCOW2.
 | Registry hives — Run keys, services, timezone, USB, UserAssist, amcache | `--full` |
 | **NTFS `$MFT`** — full paths, MACB timeline, deleted files, ADS, timestomping | `--full` |
 | **NTFS USN journal** (`$Extend\$J`) — creates, deletes, renames | `--full` |
+| **KAPE module output (EZTools CSV)** — MFTECmd, PECmd, LECmd, JLECmd, EvtxECmd, AmcacheParser, AppCompatCacheParser, RBCmd, SBECmd, SrumECmd, WxTCmd, RECmd | nothing |
+| **Plaso / log2timeline** — `l2tcsv` and psort JSON lines | nothing |
+| **Velociraptor** offline collector results (`results/*.json`) | nothing |
+| **Hayabusa / Chainsaw** detections (CSV) | nothing |
 | KAPE collections and disk images — VHDX, VHD, E01, VMDK, QCOW2 | `--full` |
 
-**Not yet:** prefetch, LNK, SRUM, browser history, PCAP, memory, cloud logs,
-`wtmp`/`btmp`/`lastlog`, systemd journals. Registry transaction logs
-(`.LOG1`/`.LOG2`) are skipped rather than replayed, so unflushed hive changes are
-invisible.
+**Processed vs raw.** Prefetch, LNK, jump lists, SRUM, ShimCache, Amcache,
+shellbags, the recycle bin and Windows Timeline are read **from the CSVs KAPE's
+modules write**, not from the raw artifacts. If you ran KAPE Targets only, those
+files are collected but not yet parsed; run the modules, or point this at the
+module output directory.
+
+**Not yet, in any form:** browser history, PCAP, memory, cloud logs,
+`wtmp`/`btmp`/`lastlog`, systemd journals, WMI repository, Volatility output.
+Registry transaction logs (`.LOG1`/`.LOG2`) are skipped rather than replayed, so
+unflushed hive changes are invisible.
 
 ### UAC / Linux triage collections
 
@@ -403,6 +413,43 @@ are deliberately narrow:
 - **Executable created** is *not* promoted from the journal. Without a directory there
   is nothing to separate a payload from a Windows update, and promoting it put 6,590
   OneDrive and Defender events into triage.
+
+### Other tools' output
+
+A real engagement folder is rarely one tool. Point this at the whole thing and it
+sorts out what each file is:
+
+```
+case/
+  KAPE_modules/   20250902_PECmd_Output.csv, ..._AppCompatCache.csv, ..._EvtxECmd_Output.csv
+  velociraptor/   results/Windows.KapeFiles.Targets.json
+  plaso/          super_timeline.csv
+  hayabusa/       results.csv
+```
+
+Everything lands on one timeline, so the story crosses tools:
+
+```
+[high] 07:50  velociraptor  invoice.pdf.exe in \Users\susan\Downloads
+[high] 07:55  eztools       beacon.exe in \AppData\Local\Temp   (ShimCache, executed)
+[high] 07:55  plaso         beacon.exe written                  (super-timeline)
+[high] 07:56  detections    Encoded PowerShell Command          (Hayabusa, high)
+```
+
+Three things are worth knowing about how this is done.
+
+**Formats are claimed on their contents, never their filenames.** KAPE's naming is
+configurable and analysts rename things, so `20250902_PECmd_Output.csv` and
+`prefetch.csv` are the same file. The header row decides.
+
+**EvtxECmd rows are rebuilt into the shape the native `.evtx` parser emits** —
+`event_id`, `channel`, and the `Payload` JSON flattened into `data` — so Sigma
+rules match them. A processed collection detects the same as the raw one.
+
+**Another tool's severity is carried across, not recomputed.** Hayabusa and
+Chainsaw hits keep the rule author's level and are tagged `third_party_detection`,
+because a rule firing is evidence that a rule fired — not that something happened.
+Filter them in or out in one query.
 
 ## Your own rules
 

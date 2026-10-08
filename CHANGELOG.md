@@ -1,5 +1,84 @@
 # Changelog
 
+## v0.9.0 — a forensics tool, not a CTF tool
+
+Two changes with one motive: make this a tool for real incident evidence, and
+make it eat what the rest of the DFIR toolchain produces.
+
+### The Hack The Box surface is gone
+
+Inspecthor grew up partly against HTB Sherlocks and carried the shape of it: a
+question-answering mode formatted to HTB's submission rules, their two zip
+passwords tried automatically, and Sherlock framing through the docs. Deleted —
+`sherlock.py`, the `ask` verb, the `Candidate` model, the candidates table, and
+the pass in `analyze.py` that scraped questions out of a readme. Three verbs now
+instead of four.
+
+Archives are generic: `--password` for an encrypted collection, with `infected`
+kept as a default attempt because that is the convention for shipping evidence and
+malware. The old test for this wrote an **unencrypted** zip and asserted it
+extracted, so it never covered the password path at all.
+
+Past CHANGELOG entries keep their HTB references. They are a record of what the
+tool was, and rewriting them would be dishonest.
+
+### KAPE's other half
+
+KAPE Targets collect raw artifacts; **Modules** run EZTools over them and leave a
+directory of CSVs. Most people run both, and on a module run the raw artifacts may
+not be kept at all — so a fully processed collection arrived and parsed as
+anonymous text.
+
+One parser, thirteen specs: MFTECmd (`$MFT`, `$J`), PECmd and its timeline, LECmd,
+JLECmd automatic and custom, EvtxECmd, AmcacheParser files and programs,
+AppCompatCacheParser, RBCmd, SBECmd, SrumECmd network and app-resource, WxTCmd,
+RECmd. The shape is identical and only the columns differ; thirteen plugin files
+would have been thirteen copies of one timestamp parser.
+
+Claimed on the header row, never the filename. That also disentangles the overlaps
+— and one of them needed more than scoring. **Every column LECmd requires also
+appears in JLECmd's AutomaticDestinations export**, so LECmd matched a jump list
+perfectly and then outscored it on count. A spec can now name columns that must be
+*absent*, which is the only thing that separates a subset.
+
+**EvtxECmd rows are rebuilt into the shape the native EVTX parser emits** —
+`event_id`, `channel`, and the `Payload` JSON flattened into `data` — because
+Sigma addresses exactly those. A row holding its payload as one opaque string is
+invisible to every rule in the corpus, which would make a processed collection
+detect strictly *worse* than the raw one.
+
+### Plaso, Velociraptor, Hayabusa, Chainsaw
+
+`plaso.py` reads `l2tcsv` and psort JSON lines. l2tcsv is the reason it is not
+another EZTools spec: `date`, `time` and `timezone` are three separate columns.
+
+`velociraptor.py` reads the offline collector's `results/*.json`. There is no
+fixed schema — an artifact is a VQL query and its columns are whatever it selected
+— so this is deliberately generic: find a timestamp by name, keep every scalar,
+name the event after the artifact. Rows with no timestamp are **counted and
+reported**, because plenty of Velociraptor artifacts are inventories and an
+analyst needs to know the rows were seen and skipped rather than assume the
+collection was empty.
+
+`detections.py` reads Hayabusa and Chainsaw. Their severity is mapped, not
+recomputed: the rule author had the rule, this has one row. They are tagged
+`third_party_detection` and never silently become findings, because a rule firing
+is not the same as something happening.
+
+### One scorer, because four had already drifted
+
+Four parsers independently needed "how interesting is this path", and had four
+copies of the same constants. They had already diverged: a double-extension lure
+was `high` from the `$MFT` and `info` from Velociraptor — the same file, the same
+host, a different answer depending on which tool collected it.
+
+`parsers/_pathscore.py` is now the single source. `tests/test_pathscore.py`
+asserts the property the duplication broke: every parser returns the same severity
+for the same path. Format-specific signals stay where they belong — `$SI`/`$FN`
+disagreement in `mft.py` because only an MFT has both, USN reason flags in
+`usnjrnl.py`, and "it was in the recycle bin" in the EZTools parser, because no
+path can tell you a file was deleted.
+
 ## v0.8.0 — $MFT, the USN journal, and a truncation that reported as success
 
 A KAPE VHDX holding `C/$MFT`, `C/$Extend/$J` and nothing else produced a case with three

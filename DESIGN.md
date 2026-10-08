@@ -14,6 +14,7 @@ evidence/  ·  KAPE .vhdx  ·  collection.zip  ·  EZTools .csv
       +-- infer.py     derive timezone / year / host FROM the evidence
       +-- detect/      YARA over bytes, Sigma over normalized events
       +-- ioc.py       indicators, linked back to the events they came from
+      +-- parsers/_pathscore.py  one path -> one severity, for every parser
       +-- store/       per-case SQLite + FTS5
       |
    cli.py ── renders it. The only module allowed to print.
@@ -193,6 +194,19 @@ rows and 580,000 of which three quarters are duplicates.
 
 Adding a parser is one file in `parsers/plugins/`. The loader auto-imports it.
 
+**A parser that holds a path uses `parsers/_pathscore.py` rather than its own
+thresholds.** Four of them grew private copies of the same two constants and the
+copies drifted: a double-extension lure scored `high` from the `$MFT` and `info`
+from Velociraptor, for the same file on the same host. Format-specific signals
+stay local -- `$SI`/`$FN` disagreement needs an MFT, USN reason flags need a
+journal, and "it was in the recycle bin" is not something a path can tell you.
+
+**Several parsers may claim `*.csv` and `*.json`.** EZTools, Plaso, the detection
+tools and Velociraptor all do, and the extension decides nothing -- each reads the
+header row or the first JSON object and scores on content. When two could match,
+a spec may name columns that must be ABSENT, which is the only way to separate a
+format whose required columns are a subset of another's.
+
 ## Store
 
 One SQLite database per case, and evidence is never written to — artifacts are
@@ -265,15 +279,19 @@ Adding detections means adding rule files, not code.
 
 ## Roadmap
 
-Parsers, in rough order of value: `$MFT` and `$J`, prefetch, shimcache, LNK and
-jump lists, SRUM (exfil byte counts), browser history, PCAP, scheduled-task XML,
-memory via Volatility 3, cloud logs (CloudTrail, M365 UAL), WMI, email.
+Parsers, in rough order of value: **raw** prefetch, LNK and jump lists, browser
+history, PCAP, scheduled-task XML, memory via Volatility 3, cloud logs
+(CloudTrail, M365 UAL), WMI, email.
 
 Each is one file in `parsers/plugins/`.
 
-Prefetch and LNK are the highest-value next two: a KAPE collection is largely
-made of them (516 and 477 files in the one measured), and today they are
-extracted-and-skipped rather than parsed.
+Prefetch, LNK, jump lists, SRUM, ShimCache, Amcache, shellbags, the recycle bin
+and Windows Timeline are already read **from EZTools CSV**, so a collection whose
+modules were run is covered. The gap is a Targets-only collection: those files are
+collected and then skipped, and a KAPE collection is largely made of them -- 516
+prefetch and 477 LNK in the one measured. Parsing the raw formats is the highest-
+value next step, and it is now an alternative path to data the tool can already
+represent rather than a blank space in the schema.
 
 On the Linux side, `wtmp`/`btmp`/`lastlog` and systemd journals are the gap. Both are
 binary formats and both answer "who logged in", which currently has to come from

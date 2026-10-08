@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Iterator, Optional
 
 from ...models import Event, ParseContext
+from .._pathscore import EXEC_EXT, extension_of, score_path
 from ..base import Parser, register
 
 # EZTools writes UTC by default, with a variable number of fractional digits and
@@ -59,19 +60,6 @@ _MIN_YEAR, _MAX_YEAR = 1980, 2100
 
 # A CSV header longer than this is not an EZTools export.
 _MAX_HEADER_BYTES = 64 * 1024
-
-# Directories that exist to hold transient files. Same list the $MFT parser uses,
-# and promoted for the same reason.
-_TEMP_STAGING = (
-    "\\appdata\\local\\temp\\", "\\windows\\temp\\", "\\users\\public\\",
-    "\\$recycle.bin\\", "\\perflogs\\", "/tmp/", "/var/tmp/",
-)
-
-_EXEC_EXT = frozenset({
-    ".exe", ".scr", ".com", ".pif", ".bat", ".cmd", ".vbs", ".vbe", ".wsf",
-    ".wsh", ".hta", ".ps1", ".psm1", ".dll", ".sys", ".jar", ".msi",
-})
-
 
 @dataclass(frozen=True)
 class Spec:
@@ -411,27 +399,15 @@ def subject_of(row: dict, spec: Spec) -> str:
 def score_row(spec: Spec, subject: str, row: dict) -> tuple[str, list[str], str]:
     """``(severity, tags, why)``.
 
-    Deliberately thin. These exports are whole-system inventories — a ShimCache
-    is every binary the OS ever saw — so anything that fires on "an executable
-    exists" promotes tens of thousands of rows and makes triage useless.
+    Location and shape come from the shared scorer so the same file scores the
+    same whether it arrived via ShimCache, Plaso or the $MFT. Only the one
+    export-specific signal lives here: a file in the recycle bin was deleted,
+    which no path can tell you.
     """
-    lowered = subject.lower().replace("/", "\\")
-    extension = lowered[lowered.rindex("."):] if "." in lowered else ""
-    executable = extension in _EXEC_EXT
-    in_temp = any(marker in lowered or marker.replace("\\", "/") in subject.lower()
-                  for marker in _TEMP_STAGING)
-
-    if executable and in_temp:
-        return "high", ["unusual_exec_path", "suspicious"], (
-            "executable in a temporary directory"
-        )
-    if spec.name == "rbcmd" and executable:
+    severity, tags, why = score_path(subject)
+    if spec.name == "rbcmd" and severity in ("info", "low") and             extension_of(subject) in EXEC_EXT:
         return "med", ["deleted", "suspicious"], "executable sent to the recycle bin"
-    if in_temp:
-        return "low", ["staging_dir"], "in a temporary directory"
-    if executable:
-        return "low", ["executable"], ""
-    return "info", [], ""
+    return severity, tags, why
 
 
 @register
