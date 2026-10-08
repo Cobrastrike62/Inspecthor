@@ -35,9 +35,15 @@ timeline.jsonl
 # user-supplied detection rules (bundled rules under inspecthor/data/ ARE tracked)
 rules-local/
 
-# local dev scratch: sync/probe helpers that must never reach the repo
-_*.sh
-_*.py
+# local dev scratch: sync/probe helpers that must never reach the repo.
+# ANCHORED to the repo root on purpose. Unanchored, these matched every
+# underscore-prefixed module in the package, and git silently dropped
+# inspecthor/parsers/plugins/_evtx_ids.py from the published tree -- which the
+# loader then swallowed as an ImportError, so a fresh clone lost the EVTX parser
+# entirely and said nothing. tests/test_packaging.py now asserts this cannot
+# happen again.
+/_*.sh
+/_*.py
 
 # editor / os
 .idea/
